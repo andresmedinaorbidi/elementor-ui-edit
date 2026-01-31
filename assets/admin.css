@@ -1,0 +1,79 @@
+/* AI Elementor Sync admin page */
+.ai-elementor-sync-admin {
+	max-width: 800px;
+}
+
+.ai-elementor-sync-admin .nav-tab-wrapper {
+	margin-bottom: 1em;
+}
+
+.ai-elementor-sync-admin .ai-elementor-sync-panel {
+	padding: 1em 0;
+}
+
+.ai-elementor-sync-admin .ai-elementor-sync-panel.hidden {
+	display: none;
+}
+
+.ai-elementor-sync-admin .ai-elementor-sync-form label {
+	display: block;
+	margin-bottom: 0.25em;
+	font-weight: 600;
+}
+
+.ai-elementor-sync-admin .ai-elementor-sync-form input[type="url"],
+.ai-elementor-sync-admin .ai-elementor-sync-form input[type="text"],
+.ai-elementor-sync-admin .ai-elementor-sync-form textarea {
+	width: 100%;
+	max-width: 100%;
+	margin-bottom: 0.5em;
+}
+
+.ai-elementor-sync-admin .ai-elementor-sync-form textarea.code {
+	font-family: Consolas, Monaco, monospace;
+	font-size: 13px;
+}
+
+.ai-elementor-sync-admin .ai-elementor-sync-result {
+	margin-top: 1em;
+	padding: 0.75em 1em;
+	border-left: 4px solid #ccc;
+	background: #f6f7f7;
+	min-height: 1.5em;
+}
+
+.ai-elementor-sync-admin .ai-elementor-sync-result.success {
+	border-left-color: #00a32a;
+	background: #f0f6f1;
+}
+
+.ai-elementor-sync-admin .ai-elementor-sync-result.error {
+	border-left-color: #d63638;
+	background: #fcf0f1;
+}
+
+.ai-elementor-sync-admin .ai-elementor-sync-result pre {
+	margin: 0;
+	white-space: pre-wrap;
+	word-break: break-word;
+	font-size: 12px;
+}
+
+.ai-elementor-sync-admin .ai-elementor-sync-result.loading {
+	color: #646970;
+}
+
+.ai-elementor-sync-admin #app-password-result .password-display {
+	font-family: Consolas, Monaco, monospace;
+	background: #fff;
+	padding: 0.5em;
+	border: 1px solid #c3c4c7;
+	margin: 0.5em 0;
+	word-break: break-all;
+}
+
+.ai-elementor-sync-admin .copy-hint {
+	font-size: 12px;
+	color: #646970;
+	margin-top: 0.5em;
+}

@@ -3,7 +3,7 @@
 /**
  * Plugin Name: AI Elementor Sync
  * Description: REST API to perform unambiguous text replacement in Elementor widgets (Text Editor + Heading) on a page by URL.
- * Version: 1.0.0
+ * Version: 1.1.0
  * Requires at least: 5.6
  * Requires PHP: 7.4
  * Text Domain: ai-elementor-sync
@@ -16,7 +16,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-define( 'AI_ELEMENTOR_SYNC_VERSION', '1.0.0' );
+define( 'AI_ELEMENTOR_SYNC_VERSION', '1.2.0' );
 define( 'AI_ELEMENTOR_SYNC_PATH', plugin_dir_path( __FILE__ ) );
 
 spl_autoload_register( function ( string $class ): void {

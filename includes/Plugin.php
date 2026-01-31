@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace AiElementorSync;
 
+use AiElementorSync\Admin\AdminPage;
 use AiElementorSync\Rest\Routes;
 use WP_REST_Request;
 use WP_REST_Server;
@@ -14,9 +15,15 @@ use WP_REST_Server;
 final class Plugin {
 
 	/**
-	 * REST route path for replace-text (used to scope encoding fix).
+	 * REST route paths that accept JSON body with user text (used to scope encoding fix).
+	 *
+	 * @var array<string>
 	 */
-	private const REPLACE_TEXT_ROUTE = '/ai-elementor/v1/replace-text';
+	private const ROUTES_WITH_JSON_BODY = [
+		'/ai-elementor/v1/replace-text',
+		'/ai-elementor/v1/llm-edit',
+		'/ai-elementor/v1/apply-edits',
+	];
 
 	/**
 	 * Initialize the plugin.
@@ -24,6 +31,7 @@ final class Plugin {
 	public static function init(): void {
 		add_action( 'rest_api_init', [ self::class, 'register_rest_routes' ] );
 		add_filter( 'rest_pre_dispatch', [ self::class, 'fix_request_body_encoding' ], 10, 3 );
+		AdminPage::init();
 	}
 
 	/**
@@ -35,7 +43,7 @@ final class Plugin {
 	 * @return mixed Unchanged $result.
 	 */
 	public static function fix_request_body_encoding( $result, WP_REST_Server $server, WP_REST_Request $request ) {
-		if ( $request->get_route() !== self::REPLACE_TEXT_ROUTE ) {
+		if ( ! in_array( $request->get_route(), self::ROUTES_WITH_JSON_BODY, true ) ) {
 			return $result;
 		}
 		$body = $request->get_body();

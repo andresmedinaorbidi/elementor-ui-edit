@@ -6,7 +6,7 @@ namespace AiElementorSync\Services;
 
 /**
  * Traverses Elementor element tree, finds matching text in Heading/Text Editor widgets,
- * and optionally replaces when exactly one match exists.
+ * and optionally replaces when exactly one widget contains the find string (normalized).
  */
 final class ElementorTraverser {
 
@@ -17,11 +17,11 @@ final class ElementorTraverser {
 	];
 
 	/**
-	 * Find all matches and optionally replace if exactly one. Mutates $data in-place only when exactly one match.
-	 * Supports both formats: root = array of elements, or root = document object with "content" key (Elementor format).
+	 * Find all widgets that contain the find string (normalized) and optionally replace if exactly one.
+	 * Mutates $data in-place only when exactly one widget contains the find.
 	 *
 	 * @param array  $data         Elementor data (full document with "content" key, or raw elements array). Passed by reference.
-	 * @param string $find         Exact visible string to find (normalized for comparison).
+	 * @param string $find         Visible string to find (normalized for comparison; match is containment, not exact equality).
 	 * @param string $replace      Replacement string.
 	 * @param array  $widget_types Allowed widget types (e.g. ['text-editor','heading']).
 	 * @return array{ matches_found: int, matches_replaced: int, candidates: array, data: array }
@@ -87,6 +87,209 @@ final class ElementorTraverser {
 	}
 
 	/**
+	 * Build a per-page dictionary of widgets (id, path, text) for target widget types only.
+	 * Used for AI edit service context; full text per widget, not just preview.
+	 *
+	 * @param array $data         Elementor data (document with "content" or raw elements array).
+	 * @param array $widget_types Widget types to include (e.g. ['text-editor','heading']).
+	 * @param int   $max_text_len Optional max length per widget text for token limits (0 = no limit).
+	 * @return array<int, array{ id: string, path: string, widget_type: string, text: string }>
+	 */
+	public static function buildPageDictionary( array $data, array $widget_types = [ 'text-editor', 'heading' ], int $max_text_len = 0 ): array {
+		$elements = self::getElementsRoot( $data );
+		$dictionary = [];
+		self::traverseBuildDictionary( $elements, $widget_types, [], $dictionary, $max_text_len );
+		return $dictionary;
+	}
+
+	/**
+	 * Replace the text of a widget at the given path. Path format: "0/1/2" (element indices).
+	 *
+	 * @param array  $data         Elementor data (passed by reference). Mutated if path is valid.
+	 * @param string $path         Path string from dictionary (e.g. "0/1/2").
+	 * @param string $new_text     New text to set (raw; for heading = title, for text-editor = editor HTML).
+	 * @param array  $widget_types Allowed widget types (e.g. ['text-editor','heading']).
+	 * @return bool True if replacement was applied, false if path invalid or not a target widget.
+	 */
+	public static function replaceByPath( array &$data, string $path, string $new_text, array $widget_types ): bool {
+		$path = trim( $path );
+		if ( $path === '' ) {
+			return false;
+		}
+		$indices = array_map( 'intval', explode( '/', $path ) );
+		foreach ( $indices as $i ) {
+			if ( $i < 0 ) {
+				return false;
+			}
+		}
+		$elements = &self::getElementsRoot( $data );
+		$node = &self::getNodeByPath( $elements, $indices );
+		if ( $node === null ) {
+			return false;
+		}
+		$el_type = $node['elType'] ?? '';
+		$widget_type = $node['widgetType'] ?? '';
+		if ( $el_type !== 'widget' || $widget_type === '' || ! in_array( $widget_type, $widget_types, true ) ) {
+			return false;
+		}
+		$field = self::WIDGET_FIELDS[ $widget_type ] ?? null;
+		if ( $field === null ) {
+			return false;
+		}
+		if ( ! is_array( $node['settings'] ?? null ) ) {
+			$node['settings'] = [];
+		}
+		$node['settings'][ $field ] = $new_text;
+		return true;
+	}
+
+	/**
+	 * Replace the text of a widget with the given Elementor id. Id is stable across reorders.
+	 *
+	 * @param array  $data         Elementor data (passed by reference). Mutated if id is valid.
+	 * @param string $id           Element id from dictionary (e.g. from $node['id']).
+	 * @param string $new_text     New text to set (raw; for heading = title, for text-editor = editor HTML).
+	 * @param array  $widget_types Allowed widget types (e.g. ['text-editor','heading']).
+	 * @return bool True if replacement was applied, false if id invalid or not a target widget.
+	 */
+	public static function replaceById( array &$data, string $id, string $new_text, array $widget_types ): bool {
+		$id = trim( $id );
+		if ( $id === '' ) {
+			return false;
+		}
+		$elements = &self::getElementsRoot( $data );
+		$node = &self::getNodeById( $elements, $id );
+		if ( $node === null ) {
+			return false;
+		}
+		$el_type = $node['elType'] ?? '';
+		$widget_type = $node['widgetType'] ?? '';
+		if ( $el_type !== 'widget' || $widget_type === '' || ! in_array( $widget_type, $widget_types, true ) ) {
+			return false;
+		}
+		$field = self::WIDGET_FIELDS[ $widget_type ] ?? null;
+		if ( $field === null ) {
+			return false;
+		}
+		if ( ! is_array( $node['settings'] ?? null ) ) {
+			$node['settings'] = [];
+		}
+		$node['settings'][ $field ] = $new_text;
+		return true;
+	}
+
+	/**
+	 * Resolve element id to a reference to the node in the elements tree, or null if not found.
+	 *
+	 * @param array  $elements Elements array (root or nested).
+	 * @param string $id       Element id (e.g. from $node['id']).
+	 * @return array|null Reference to node or null.
+	 */
+	private static function &getNodeById( array &$elements, string $id ) {
+		static $null = null;
+		if ( ! is_array( $elements ) ) {
+			return $null;
+		}
+		foreach ( $elements as $index => &$node ) {
+			if ( ! is_array( $node ) ) {
+				continue;
+			}
+			$node_id = $node['id'] ?? '';
+			if ( is_string( $node_id ) && $node_id !== '' && $node_id === $id ) {
+				return $node;
+			}
+			$children = $node['elements'] ?? [];
+			if ( is_array( $children ) && ! empty( $children ) ) {
+				$found = &self::getNodeById( $children, $id );
+				if ( $found !== null ) {
+					return $found;
+				}
+			}
+		}
+		unset( $node );
+		return $null;
+	}
+
+	/**
+	 * Resolve path indices to a reference to the node in the elements tree, or null if invalid.
+	 *
+	 * @param array $elements Elements array (root or nested).
+	 * @param array $indices  List of indices (e.g. [0, 1, 2]).
+	 * @return array|null Reference to node or null.
+	 */
+	private static function &getNodeByPath( array &$elements, array $indices ) {
+		static $null = null;
+		if ( ! is_array( $elements ) || empty( $indices ) ) {
+			return $null;
+		}
+		$current = &$elements;
+		$depth = count( $indices );
+		for ( $i = 0; $i < $depth; $i++ ) {
+			$idx = $indices[ $i ];
+			if ( ! isset( $current[ $idx ] ) || ! is_array( $current[ $idx ] ) ) {
+				return $null;
+			}
+			if ( $i === $depth - 1 ) {
+				return $current[ $idx ];
+			}
+			$children = &$current[ $idx ]['elements'];
+			if ( ! is_array( $children ) ) {
+				return $null;
+			}
+			$current = &$children;
+		}
+		return $null;
+	}
+
+	/**
+	 * Recursively build dictionary entries (path, widget_type, full text) for target widgets.
+	 *
+	 * @param array $elements     Elements array.
+	 * @param array $widget_types Allowed widget types.
+	 * @param array $path_prefix  Current path indices.
+	 * @param array $dictionary   Output: list of { path, widget_type, text }.
+	 * @param int   $max_text_len Max length per text (0 = no truncation).
+	 */
+	private static function traverseBuildDictionary( array $elements, array $widget_types, array $path_prefix, array &$dictionary, int $max_text_len ): void {
+		if ( ! is_array( $elements ) ) {
+			return;
+		}
+		foreach ( $elements as $index => $node ) {
+			if ( ! is_array( $node ) ) {
+				continue;
+			}
+			$path = array_merge( $path_prefix, [ $index ] );
+			$path_str = implode( '/', array_map( 'strval', $path ) );
+			$el_type = $node['elType'] ?? '';
+			$widget_type = $node['widgetType'] ?? '';
+
+			if ( $el_type === 'widget' && $widget_type !== '' && in_array( $widget_type, $widget_types, true ) ) {
+				$field = self::WIDGET_FIELDS[ $widget_type ] ?? null;
+				if ( $field !== null ) {
+					$settings = $node['settings'] ?? [];
+					$value = $settings[ $field ] ?? '';
+					$text = is_string( $value ) ? $value : (string) $value;
+					if ( $max_text_len > 0 && mb_strlen( $text ) > $max_text_len ) {
+						$text = mb_substr( $text, 0, $max_text_len ) . '...';
+					}
+					$el_id = isset( $node['id'] ) && is_string( $node['id'] ) ? $node['id'] : '';
+					$dictionary[] = [
+						'id'          => $el_id,
+						'path'        => $path_str,
+						'widget_type' => $widget_type,
+						'text'        => $text,
+					];
+				}
+			}
+
+			$children = $node['elements'] ?? [];
+			if ( is_array( $children ) && ! empty( $children ) ) {
+				self::traverseBuildDictionary( $children, $widget_types, $path, $dictionary, $max_text_len );
+			}
+		}
+	}
+
+	/**
 	 * Collect all heading/text-editor fields from the tree (for diagnostics). Does not mutate data.
 	 *
 	 * @param array $data         Elementor data (document with "content" or raw elements array).
@@ -133,7 +336,9 @@ final class ElementorTraverser {
 					$value = $settings[ $field ] ?? '';
 					$value_str = is_string( $value ) ? $value : (string) $value;
 					$norm = Normalizer::normalize( $value_str );
+					$el_id = isset( $node['id'] ) && is_string( $node['id'] ) ? $node['id'] : '';
 					$text_fields[] = [
+						'id'          => $el_id,
 						'widget_type' => $widget_type,
 						'field'       => $field,
 						'preview'     => Normalizer::preview_snippet( $norm ),
@@ -150,14 +355,14 @@ final class ElementorTraverser {
 	}
 
 	/**
-	 * Pass 1: collect candidates and count matches (no replacement).
+	 * Pass 1: collect candidates and count matches (containment: normalized text contains find). No replacement.
 	 *
 	 * @param array  $elements     Elements array (may be root or children).
 	 * @param string $find_norm    Normalized find string.
 	 * @param string $find_raw     Raw find string (for reference).
 	 * @param array  $widget_types Allowed widget types.
 	 * @param array  $path_prefix  Current path indices.
-	 * @param array  $candidates   Output: list of { widget_type, field, preview, path }.
+	 * @param array  $candidates   Output: list of { id, widget_type, field, preview, path }.
 	 * @param int    $match_count  Output: number of matches.
 	 */
 	private static function traverseCollect( array $elements, string $find_norm, string $find_raw, array $widget_types, array $path_prefix, array &$candidates, int &$match_count ): void {
@@ -179,9 +384,11 @@ final class ElementorTraverser {
 					$value = $settings[ $field ] ?? '';
 					$value_str = is_string( $value ) ? $value : (string) $value;
 					$norm = Normalizer::normalize( $value_str );
-					if ( $norm === $find_norm ) {
+					if ( $find_norm !== '' && mb_strpos( $norm, $find_norm ) !== false ) {
 						$match_count++;
+						$el_id = isset( $node['id'] ) && is_string( $node['id'] ) ? $node['id'] : '';
 						$candidates[] = [
+							'id'          => $el_id,
 							'widget_type' => $widget_type,
 							'field'       => $field,
 							'preview'     => Normalizer::preview_snippet( $norm ),
@@ -199,7 +406,8 @@ final class ElementorTraverser {
 	}
 
 	/**
-	 * Pass 2: find the single matching node and apply replacement (only when exactly one match).
+	 * Pass 2: find the single matching node (containment) and apply replacement (only when exactly one match).
+	 * If raw contains find_raw, replace that substring; else replace entire widget value.
 	 *
 	 * @param array  $elements     Elements array.
 	 * @param string $find_norm    Normalized find string.
@@ -232,21 +440,14 @@ final class ElementorTraverser {
 					$value = $settings[ $field ] ?? '';
 					$value_str = is_string( $value ) ? $value : (string) $value;
 					$norm = Normalizer::normalize( $value_str );
-					if ( $norm === $find_norm ) {
-						if ( $widget_type === 'heading' ) {
+					if ( $find_norm !== '' && mb_strpos( $norm, $find_norm ) !== false ) {
+						if ( strpos( $value_str, $find_raw ) !== false ) {
+							$settings[ $field ] = str_replace( $find_raw, $replace, $value_str );
+						} else {
 							$settings[ $field ] = $replace;
-							$replaced = 1;
-							return;
 						}
-						if ( $widget_type === 'text-editor' ) {
-							// Only replace if raw HTML contains the exact find string.
-							if ( strpos( $value_str, $find_raw ) !== false ) {
-								$settings[ $field ] = str_replace( $find_raw, $replace, $value_str );
-								$replaced = 1;
-								return;
-							}
-							// Normalized match but raw not present: do not modify (treat as no replace).
-						}
+						$replaced = 1;
+						return;
 					}
 				}
 			}
