@@ -83,18 +83,49 @@ final class LlmClient {
 			return [ 'edits' => [], 'error' => $decoded['error'] ];
 		}
 
-		$edits = $decoded['edits'] ?? null;
-		if ( ! is_array( $edits ) ) {
-			$edits = [];
+		// Accept "edits", "changes", or "results" so different LLM apps can work.
+		$raw_edits = $decoded['edits'] ?? $decoded['changes'] ?? $decoded['results'] ?? null;
+		$raw_edits_count = is_array( $raw_edits ) ? count( $raw_edits ) : 0;
+		if ( ! is_array( $raw_edits ) ) {
+			Logger::log_ui( 'response', 'LLM response: edits missing or not array', [
+				'raw_edits_count'   => 0,
+				'edits_type'        => gettype( $raw_edits ),
+				'response_keys'     => array_keys( $decoded ),
+				'body_snippet'       => strlen( $raw_body ) > 500 ? substr( $raw_body, 0, 500 ) . '...' : $raw_body,
+			] );
+			$raw_edits = [];
 		}
-		$edits = self::normalize_edits( $edits );
+		$edits = self::normalize_edits( $raw_edits );
 
-		Logger::log_ui( 'response', 'LLM response OK', [ 'edits_count' => count( $edits ) ] );
+		if ( $raw_edits_count === 0 ) {
+			Logger::log_ui( 'response', 'LLM returned zero edits (check response shape in Log)', [
+				'response_keys' => array_keys( $decoded ),
+				'body_snippet'  => strlen( $raw_body ) > 500 ? substr( $raw_body, 0, 500 ) . '...' : $raw_body,
+			] );
+		}
 
-		return [
-			'edits' => $edits,
-			'error' => null,
+		if ( $raw_edits_count > 0 && count( $edits ) === 0 ) {
+			$sample = array_slice( $raw_edits, 0, 2 );
+			Logger::log_ui( 'response', 'LLM edits normalized to zero (check keys: id/path, new_text)', [
+				'raw_edits_count' => $raw_edits_count,
+				'sample'          => $sample,
+			] );
+		}
+
+		Logger::log_ui( 'response', 'LLM response OK', [
+			'raw_edits_count'   => $raw_edits_count,
+			'normalized_count'  => count( $edits ),
+		] );
+
+		$out = [
+			'edits'           => $edits,
+			'raw_edits_count' => $raw_edits_count,
+			'error'           => null,
 		];
+		if ( $raw_edits_count === 0 ) {
+			$out['response_keys'] = array_keys( $decoded );
+		}
+		return $out;
 	}
 
 	/**

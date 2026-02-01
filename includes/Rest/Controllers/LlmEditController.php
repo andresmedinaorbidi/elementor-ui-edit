@@ -61,17 +61,34 @@ final class LlmEditController {
 
 		$result = LlmClient::requestEdits( $dictionary, $instruction );
 		$edits = $result['edits'];
+		$raw_edits_count = $result['raw_edits_count'] ?? 0;
 		$error = $result['error'] ?? null;
+
+		$received_from_llm = [
+			'raw_edits_count'        => $raw_edits_count,
+			'normalized_edits_count' => count( $edits ),
+			'edits'                  => $edits,
+		];
+		if ( isset( $result['response_keys'] ) && is_array( $result['response_keys'] ) ) {
+			$received_from_llm['response_keys'] = $result['response_keys'];
+		}
 
 		if ( $error !== null ) {
 			return new WP_REST_Response( [
-				'status'  => 'error',
-				'message' => $error,
-				'post_id' => $post_id,
+				'status'             => 'error',
+				'message'            => $error,
+				'post_id'            => $post_id,
+				'received_from_llm'  => $received_from_llm,
 			], 502 );
 		}
 
-		return self::apply_edits_to_data( $data, $post_id, $edits, $widget_types );
+		$response = self::apply_edits_to_data( $data, $post_id, $edits, $widget_types );
+		$body = $response->get_data();
+		if ( is_array( $body ) ) {
+			$body['received_from_llm'] = $received_from_llm;
+			$response->set_data( $body );
+		}
+		return $response;
 	}
 
 	/**
@@ -152,6 +169,7 @@ final class LlmEditController {
 	private static function apply_edits_to_data( array &$data, int $post_id, array $edits, array $widget_types ): WP_REST_Response {
 		$applied_count = 0;
 		$failed = [];
+		$applied_edits = []; // Track { id?, path?, new_text, modified_path? } for verification.
 
 		foreach ( $edits as $edit ) {
 			$new_text = $edit['new_text'];
@@ -166,16 +184,35 @@ final class LlmEditController {
 			}
 			if ( $ok ) {
 				$applied_count++;
+				$modified_path = null;
+				if ( $id !== '' ) {
+					$modified_path = ElementorTraverser::findPathById( $data, $id );
+				} else {
+					$modified_path = $path;
+				}
+				$applied_edits[] = [
+					'id'             => $id !== '' ? $id : null,
+					'path'           => $path !== '' ? $path : null,
+					'modified_path'  => $modified_path,
+					'new_text'       => $new_text,
+				];
 			} else {
+				$reason = self::get_edit_failure_reason( $data, $id, $path, $widget_types );
 				$failed[] = [
-					'id'    => $id !== '' ? $id : null,
-					'path'  => $path !== '' ? $path : null,
-					'error' => 'Invalid id/path or not a target widget.',
+					'id'     => $id !== '' ? $id : null,
+					'path'   => $path !== '' ? $path : null,
+					'error'  => 'Invalid id/path or not a target widget.',
+					'reason' => $reason,
 				];
 			}
 		}
 
+		$verified_in_memory_before_save = null;
+		$verified_after_save = null;
 		if ( $applied_count > 0 ) {
+			// Confirm $data (in memory) has the new text before we save (diagnostic for reference bugs).
+			$verified_in_memory_before_save = self::verify_applied_edits_in_data( $data, $applied_edits, $widget_types );
+
 			$saved = ElementorDataStore::save( $post_id, $data );
 			if ( ! $saved ) {
 				Logger::log_ui( 'error', 'Failed to save Elementor data (apply-edits).', [ 'post_id' => $post_id, 'applied_count' => $applied_count ] );
@@ -183,13 +220,156 @@ final class LlmEditController {
 			}
 			CacheRegenerator::regenerate( $post_id );
 			Logger::log( 'Applied edits and saved', [ 'post_id' => $post_id, 'applied_count' => $applied_count ] );
+
+			// Force fresh read from DB (clear post meta cache) then verify.
+			wp_cache_delete( $post_id, 'post_meta' );
+			$verified_after_save = self::verify_applied_edits_in_meta( $post_id, $applied_edits, $widget_types );
 		}
 
-		return new WP_REST_Response( [
+		$body = [
 			'status'         => 'ok',
 			'post_id'        => $post_id,
 			'applied_count'  => $applied_count,
 			'failed'         => $failed,
-		], 200 );
+		];
+		if ( ! empty( $applied_edits ) ) {
+			$body['applied_edits'] = $applied_edits;
+		}
+		if ( $verified_in_memory_before_save !== null ) {
+			$body['verified_in_memory_before_save'] = $verified_in_memory_before_save;
+		}
+		if ( $verified_after_save !== null ) {
+			$body['verified_after_save'] = $verified_after_save;
+		}
+		return new WP_REST_Response( $body, 200 );
+	}
+
+	/**
+	 * Check that $data (in memory) has each applied edit's new_text at the node. Diagnostic for reference bugs.
+	 *
+	 * @param array $data          Elementor data (same array we're about to save).
+	 * @param array $applied_edits  List of { id?, path?, new_text, modified_path? }.
+	 * @param array $widget_types  Allowed widget types.
+	 * @return array{ all_verified: bool, details: array }
+	 */
+	private static function verify_applied_edits_in_data( array $data, array $applied_edits, array $widget_types ): array {
+		$details = [];
+		$all_verified = true;
+		foreach ( $applied_edits as $applied ) {
+			$id = $applied['id'] ?? '';
+			$path = $applied['modified_path'] ?? $applied['path'] ?? '';
+			$new_text = $applied['new_text'] ?? '';
+			$node = null;
+			if ( $id !== '' && $id !== null ) {
+				$node = ElementorTraverser::findNodeById( $data, $id );
+			}
+			if ( $node === null && $path !== '' ) {
+				$node = ElementorTraverser::findNodeByPath( $data, $path );
+			}
+			$found_in_memory = false;
+			if ( $node !== null && is_array( $node ) ) {
+				$widget_type = $node['widgetType'] ?? '';
+				$field = $widget_type === 'heading' ? 'title' : ( $widget_type === 'text-editor' ? 'editor' : null );
+				if ( $field !== null ) {
+					$current = $node['settings'][ $field ] ?? '';
+					$found_in_memory = (string) $current === (string) $new_text;
+				}
+			}
+			$details[] = [
+				'id'                => $id ?: null,
+				'path'              => $path ?: null,
+				'found_in_memory'   => $found_in_memory,
+			];
+			if ( ! $found_in_memory ) {
+				$all_verified = false;
+			}
+		}
+		return [ 'all_verified' => $all_verified, 'details' => $details ];
+	}
+
+	/**
+	 * Re-read _elementor_data and check if each applied edit's new_text is present at the node. Diagnostic for save/cache issues.
+	 *
+	 * @param int   $post_id        Post ID.
+	 * @param array $applied_edits List of { id?, path?, new_text, modified_path? }.
+	 * @param array $widget_types  Allowed widget types.
+	 * @return array{ all_verified: bool, details: array } Details per edit: path/id, expected_snippet, found_in_meta.
+	 */
+	private static function verify_applied_edits_in_meta( int $post_id, array $applied_edits, array $widget_types ): array {
+		$reloaded = ElementorDataStore::get( $post_id );
+		if ( $reloaded === null ) {
+			return [ 'all_verified' => false, 'details' => [], 'error' => 'Could not re-read _elementor_data after save.' ];
+		}
+		$details = [];
+		$all_verified = true;
+		foreach ( $applied_edits as $applied ) {
+			$id = $applied['id'] ?? '';
+			$path = $applied['modified_path'] ?? $applied['path'] ?? '';
+			$new_text = $applied['new_text'] ?? '';
+			$node = null;
+			if ( $id !== '' && $id !== null ) {
+				$node = ElementorTraverser::findNodeById( $reloaded, $id );
+			}
+			if ( $node === null && $path !== '' ) {
+				$node = ElementorTraverser::findNodeByPath( $reloaded, $path );
+			}
+			$found_in_meta = false;
+			$expected_snippet = mb_strlen( $new_text ) > 80 ? mb_substr( $new_text, 0, 80 ) . '...' : $new_text;
+			if ( $node !== null && is_array( $node ) ) {
+				$widget_type = $node['widgetType'] ?? '';
+				$field = $widget_type === 'heading' ? 'title' : ( $widget_type === 'text-editor' ? 'editor' : null );
+				if ( $field !== null ) {
+					$current = $node['settings'][ $field ] ?? '';
+					$found_in_meta = (string) $current === (string) $new_text;
+				}
+			}
+			$details[] = [
+				'id'               => $id ?: null,
+				'path'             => $path ?: null,
+				'expected_snippet' => $expected_snippet,
+				'found_in_meta'    => $found_in_meta,
+			];
+			if ( ! $found_in_meta ) {
+				$all_verified = false;
+			}
+		}
+		return [ 'all_verified' => $all_verified, 'details' => $details ];
+	}
+
+	/**
+	 * Determine why an edit failed (for failed[] reason field).
+	 *
+	 * @param array  $data         Elementor data.
+	 * @param string $id          Edit id (may be empty).
+	 * @param string $path        Edit path (may be empty).
+	 * @param array  $widget_types Allowed widget types.
+	 * @return string One of: id_not_found, path_invalid, not_target_widget, unknown.
+	 */
+	private static function get_edit_failure_reason( array &$data, string $id, string $path, array $widget_types ): string {
+		if ( $id !== '' ) {
+			$node = ElementorTraverser::findNodeById( $data, $id );
+			if ( $node === null ) {
+				return 'id_not_found';
+			}
+			$el_type = $node['elType'] ?? '';
+			$widget_type = $node['widgetType'] ?? '';
+			if ( $el_type !== 'widget' || $widget_type === '' || ! in_array( $widget_type, $widget_types, true ) ) {
+				return 'not_target_widget';
+			}
+			return 'unknown';
+		}
+		if ( $path !== '' ) {
+			$node = ElementorTraverser::findNodeByPath( $data, $path );
+			if ( $node === null ) {
+				return 'path_invalid';
+			}
+			$el_type = $node['elType'] ?? '';
+			$widget_type = $node['widgetType'] ?? '';
+			if ( $el_type !== 'widget' || $widget_type === '' || ! in_array( $widget_type, $widget_types, true ) ) {
+				return 'not_target_widget';
+			}
+			return 'unknown';
+		}
+		return 'unknown';
 	}
 }

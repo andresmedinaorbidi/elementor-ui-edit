@@ -145,6 +145,8 @@ final class ElementorTraverser {
 
 	/**
 	 * Replace the text of a widget with the given Elementor id. Id is stable across reorders.
+	 * Implemented by resolving id to path then calling replaceByPath so the mutation uses the same
+	 * code path as path-based edits (avoids reference bugs with getNodeById in recursion).
 	 *
 	 * @param array  $data         Elementor data (passed by reference). Mutated if id is valid.
 	 * @param string $id           Element id from dictionary (e.g. from $node['id']).
@@ -157,25 +159,100 @@ final class ElementorTraverser {
 		if ( $id === '' ) {
 			return false;
 		}
+		$path = self::findPathById( $data, $id );
+		if ( $path === null ) {
+			return false;
+		}
+		return self::replaceByPath( $data, $path, $new_text, $widget_types );
+	}
+
+	/**
+	 * Find a node by Elementor id (read-only). For diagnostics when an edit fails.
+	 *
+	 * @param array  $data Elementor data (document with "content" or raw elements array). Passed by reference.
+	 * @param string $id  Element id (e.g. from dictionary).
+	 * @return array|null Node array if found, null otherwise.
+	 */
+	public static function findNodeById( array &$data, string $id ): ?array {
+		$id = trim( $id );
+		if ( $id === '' ) {
+			return null;
+		}
 		$elements = &self::getElementsRoot( $data );
 		$node = &self::getNodeById( $elements, $id );
-		if ( $node === null ) {
-			return false;
+		return $node;
+	}
+
+	/**
+	 * Find the path string (e.g. "0/1/2") of a node by id. For diagnostics (which node was modified).
+	 *
+	 * @param array  $data Elementor data (document with "content" or raw elements array).
+	 * @param string $id  Element id.
+	 * @return string|null Path string if found, null otherwise.
+	 */
+	public static function findPathById( array $data, string $id ): ?string {
+		$id = trim( $id );
+		if ( $id === '' ) {
+			return null;
 		}
-		$el_type = $node['elType'] ?? '';
-		$widget_type = $node['widgetType'] ?? '';
-		if ( $el_type !== 'widget' || $widget_type === '' || ! in_array( $widget_type, $widget_types, true ) ) {
-			return false;
+		$elements = self::getElementsRoot( $data );
+		$path = self::traverseFindPathById( $elements, $id, [] );
+		return $path;
+	}
+
+	/**
+	 * Traverse elements to find path (indices) to node with given id.
+	 *
+	 * @param array $elements  Elements array.
+	 * @param string $id       Element id.
+	 * @param array $path_so_far Current path indices.
+	 * @return string|null Path string if found, null otherwise.
+	 */
+	private static function traverseFindPathById( array $elements, string $id, array $path_so_far ): ?string {
+		if ( ! is_array( $elements ) ) {
+			return null;
 		}
-		$field = self::WIDGET_FIELDS[ $widget_type ] ?? null;
-		if ( $field === null ) {
-			return false;
+		foreach ( $elements as $index => $node ) {
+			if ( ! is_array( $node ) ) {
+				continue;
+			}
+			$node_id = $node['id'] ?? '';
+			if ( is_string( $node_id ) && $node_id !== '' && $node_id === $id ) {
+				$path = array_merge( $path_so_far, [ $index ] );
+				return implode( '/', array_map( 'strval', $path ) );
+			}
+			$children = $node['elements'] ?? [];
+			if ( is_array( $children ) && ! empty( $children ) ) {
+				$found = self::traverseFindPathById( $children, $id, array_merge( $path_so_far, [ $index ] ) );
+				if ( $found !== null ) {
+					return $found;
+				}
+			}
 		}
-		if ( ! is_array( $node['settings'] ?? null ) ) {
-			$node['settings'] = [];
+		return null;
+	}
+
+	/**
+	 * Find a node by path string "0/1/2" (read-only). For diagnostics when an edit fails.
+	 *
+	 * @param array  $data Elementor data (document with "content" or raw elements array). Passed by reference.
+	 * @param string $path Path string (e.g. "0/1/2").
+	 * @return array|null Node array if found, null otherwise.
+	 */
+	public static function findNodeByPath( array &$data, string $path ): ?array {
+		$path = trim( $path );
+		if ( $path === '' ) {
+			return null;
 		}
-		$node['settings'][ $field ] = $new_text;
-		return true;
+		$indices = array_map( 'intval', explode( '/', $path ) );
+		foreach ( $indices as $i ) {
+			if ( $i < 0 ) {
+				return null;
+			}
+		}
+		$elements = &self::getElementsRoot( $data );
+		$node = &self::getNodeByPath( $elements, $indices );
+		return $node;
 	}
 
 	/**

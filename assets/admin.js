@@ -248,12 +248,51 @@
 					} );
 				} )
 				.then( function ( result ) {
-					setResult( 'result-llm-edit', renderJson( result.data ), ! result.ok );
+					const content = renderLlmEditResult( result.data );
+					setResult( 'result-llm-edit', content, ! result.ok );
 				} )
 				.catch( function ( err ) {
 					setResult( 'result-llm-edit', '<pre>' + ( err.message || String( err ) ) + '</pre>', true );
 				} );
 		} );
+	}
+
+	function renderLlmEditResult( data ) {
+		if ( ! data ) return renderJson( data );
+		const received = data.received_from_llm;
+		let html = '';
+		if ( received && typeof received === 'object' ) {
+			html += '<div class="ai-elementor-sync-llm-received">';
+			html += '<h3 class="ai-elementor-sync-result-heading">Received from LLM</h3>';
+			html += '<p>Raw edits: <strong>' + escapeHtml( String( received.raw_edits_count ?? '' ) ) + '</strong>, ';
+			html += 'Normalized: <strong>' + escapeHtml( String( received.normalized_edits_count ?? '' ) ) + '</strong></p>';
+			if ( Array.isArray( received.response_keys ) && received.response_keys.length > 0 ) {
+				html += '<p>Response top-level keys: <code>' + escapeHtml( received.response_keys.join( ', ' ) ) + '</code> ';
+				html += '(plugin expects <code>edits</code>, or <code>changes</code>, or <code>results</code>)</p>';
+			}
+			if ( Array.isArray( received.edits ) && received.edits.length > 0 ) {
+				html += '<pre class="ai-elementor-sync-edits-pre">' + escapeHtml( JSON.stringify( received.edits, null, 2 ) ) + '</pre>';
+			} else {
+				html += '<p>No edits to apply (empty or all dropped by normalization). Check the Log tab for the actual response body.</p>';
+			}
+			html += '</div>';
+		}
+		if ( Array.isArray( data.failed ) && data.failed.length > 0 ) {
+			html += '<div class="ai-elementor-sync-llm-failed">';
+			html += '<h3 class="ai-elementor-sync-result-heading">Failed edits (reason)</h3>';
+			html += '<ul>';
+			data.failed.forEach( function ( entry ) {
+				const reason = entry.reason != null ? escapeHtml( String( entry.reason ) ) : '';
+				const idPath = [ entry.id, entry.path ].filter( Boolean ).join( ', ') || '—';
+				html += '<li><code>' + escapeHtml( idPath ) + '</code> → <strong>' + reason + '</strong>';
+				if ( entry.error ) html += ' (' + escapeHtml( entry.error ) + ')';
+				html += '</li>';
+			} );
+			html += '</ul></div>';
+		}
+		html += '<div class="ai-elementor-sync-llm-full"><h3 class="ai-elementor-sync-result-heading">Full response</h3>';
+		html += renderJson( data ) + '</div>';
+		return html;
 	}
 
 	// Apply edits: POST JSON { url, edits }
