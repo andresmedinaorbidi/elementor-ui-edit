@@ -8,6 +8,7 @@ use AiElementorSync\Rest\Controllers\ApplicationPasswordController;
 use AiElementorSync\Rest\Controllers\LlmEditController;
 use AiElementorSync\Rest\Controllers\ReplaceTextController;
 use AiElementorSync\Rest\Controllers\SettingsController;
+use AiElementorSync\Services\ElementorTraverser;
 use AiElementorSync\Services\UrlResolver;
 use WP_REST_Request;
 use WP_REST_Server;
@@ -49,7 +50,7 @@ final class Routes {
 				'widget_types'  => [
 					'required' => false,
 					'type'     => 'array',
-					'default'  => [ 'text-editor', 'heading' ],
+					'default'  => ElementorTraverser::SUPPORTED_WIDGET_TYPES,
 				],
 			],
 		] );
@@ -59,12 +60,18 @@ final class Routes {
 			'callback'            => [ ReplaceTextController::class, 'inspect' ],
 			'permission_callback' => [ self::class, 'permission_inspect' ],
 			'args'                => [
-				'url' => [
+				'url'           => [
 					'required'          => true,
 					'type'              => 'string',
 					'validate_callback' => function ( $v ) {
 						return is_string( $v ) && trim( $v ) !== '';
 					},
+				],
+				'widget_types'  => [
+					'required' => false,
+					'type'     => 'array',
+					'default'  => ElementorTraverser::SUPPORTED_WIDGET_TYPES,
+					'description' => 'Widget types to include (default: all supported types).',
 				],
 			],
 		] );
@@ -88,7 +95,7 @@ final class Routes {
 				'widget_types'  => [
 					'required' => false,
 					'type'     => 'array',
-					'default'  => [ 'text-editor', 'heading' ],
+					'default'  => ElementorTraverser::SUPPORTED_WIDGET_TYPES,
 				],
 			],
 		] );
@@ -112,7 +119,7 @@ final class Routes {
 				'widget_types'  => [
 					'required' => false,
 					'type'     => 'array',
-					'default'  => [ 'text-editor', 'heading' ],
+					'default'  => ElementorTraverser::SUPPORTED_WIDGET_TYPES,
 				],
 			],
 		] );

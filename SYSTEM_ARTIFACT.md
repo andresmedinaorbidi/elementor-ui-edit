@@ -6,13 +6,12 @@
 ## 1. Overview
 
 ### 1.1 Purpose
-This system enables **text replacement** and **natural-language edits via an external AI service** in Elementor page content (Text Editor and Heading widgets) via a REST API keyed by page URL. Find/replace uses **substring (containment)** match: "normal text" matches "This is a normal text"; replace is applied only when **exactly one** widget contains the find. Widget-elements can be identified by Elementor's stable **`id`** (in addition to index path). The plugin calls a **single external AI edit service URL** (your proxy); no API key or model is stored in WordPress. It is for **editors and AI/tooling** that need to update page copy programmatically.
+This system enables **text replacement** and **natural-language edits via an external AI service** in Elementor page content via a REST API keyed by page URL. Supported widgets include **heading**, **text-editor**, **button**, **icon**, **image-box**, **icon-box**, **testimonial**, **counter**, **animated-headline**, **flip-box**, **icon-list**, **accordion**, **tabs**, **price-list**, **price-table**. Each widget can expose multiple text fields and optional link/URL; repeater widgets expose per-item text and link. Find/replace uses **substring (containment)** match and is applied only when **exactly one** slot contains the find. Apply-edits accept **new_text** and/or **new_url**/new_link, with optional **field** and **item_index** to target specific slots. Widget-elements are identified by Elementor's stable **`id`** or index **path**. The plugin calls a **single external AI edit service URL** (your proxy); no API key or model is stored in WordPress.
 
 ### 1.2 Non-Goals
 * Does not handle authentication beyond WordPress (no custom auth)
 * Does not store or send LLM API keys; key and LLM control (e.g. LangSmith) live in the external service
 * Does not support bulk or multi-page replacement in one request
-* Does not replace text in widgets other than `text-editor` and `heading` (unless extended via `widget_types`)
 * Does not provide built-in rate limiting or optimistic locking for concurrent edits (last-write-wins)
 * Does not provide the **unified UI** for multiple sites; that lives in the external LLM app. This plugin provides an in-WordPress admin UI to call endpoints and register this site with the LLM app.
 
@@ -50,7 +49,7 @@ includes/
       SettingsController.php   # get_settings, update_settings, get_log, clear_log
   Services/
     UrlResolver.php            # URL → post_id
-    ElementorDataStore.php     # get/save _elementor_data (robust save: unchanged = success, fallback delete+add)
+    ElementorDataStore.php     # get/save _elementor_data (save: always delete+add to force write; update fallback if add fails)
     ElementorTraverser.php     # find/replace (containment), buildPageDictionary, replaceByPath, replaceById, collectAllTextFields
     Normalizer.php             # normalize text for matching, preview_snippet
     LlmClient.php              # requestEdits (dictionary array, instruction); config: AI service URL only; logs to UI log
@@ -64,7 +63,7 @@ Brief description of each:
 * **Plugin:** Bootstrap and REST wiring; fixes request body encoding for replace-text, llm-edit, and apply-edits routes; inits AdminPage.
 * **Admin:** Settings submenu “AI Elementor Sync”; single page with tabs: **Inspect**, **Replace text**, **LLM edit**, **Apply edits**, **Application password**, **Settings**, **Log**. Admin page capability: `edit_posts`. **Settings** tab: AI service URL (default Render.com), LLM register URL. **Log** tab: view/clear UI log (newest-first display). Uses cookie + nonce to call REST endpoints; “Create application password” calls create-application-password; “Register with LLM app” POSTs site_url, username, application_password to optional LLM register URL (option `ai_elementor_sync_llm_register_url` pre-fills the field).
 * **Rest:** Delivery layer; routes, permission checks, controllers that orchestrate services. Settings (GET/POST) require `manage_options`; log (GET) and clear-log (POST) require `edit_posts`.
-* **Services:** Application logic (traverser, normalizer, LLM client) and infrastructure (data store, URL resolution, cache). ElementorDataStore::save treats unchanged value as success and uses delete+add fallback; logs save failures to UI log. CacheRegenerator deletes post meta `_elementor_css` then calls Elementor files_manager clear_cache so frontend shows updated content.
+* **Services:** Application logic (traverser, normalizer, LLM client) and infrastructure (data store, URL resolution, cache). ElementorDataStore::save always uses delete+add to force physical write (fixes cache/update no-op); fallback to update if add fails; logs encode/save failures to UI log. CacheRegenerator deletes post meta `_elementor_css`, uses files_manager clear_cache, triggers post-specific `elementor/css_file/post/parse`, then `elementor/core/files/clear_cache` so frontend shows updated content.
 * **Support:** Cross-cutting helpers (errors, logging). Logger always appends to UI log (option `ai_elementor_sync_ui_log`, max 100 entries); when WP_DEBUG, also writes to error_log.
 
 ---
@@ -74,19 +73,20 @@ Brief description of each:
 ### 4.1 Main Entities / Concepts
 * **Page:** Identified by URL; resolved to a WordPress post (ID). Must be editable by the current user.
 * **Elementor document:** Tree of elements stored in post meta `_elementor_data`; either `{ content: [ elements ] }` or raw elements array.
-* **Widget (text-editor / heading):** Element with `elType === 'widget'` and `widgetType` in allowed list; text lives in `settings.editor` or `settings.title`.
-* **Match:** A widget **contains** the find string (normalized); replacement is applied only when there is **exactly one** such widget. If raw value contains find literally, replace that substring; else replace entire widget value.
-* **Page dictionary:** Ephemeral per request; list of `{ id, path, widget_type, text }` for target widgets only. Built from current `_elementor_data`; used by external AI edit service. Not persisted.
+* **Widget:** Element with `elType === 'widget'` and `widgetType` in allowed list. **Simple widgets** have one or more text fields and optional link (e.g. image-box: title_text, description_text, link). **Repeater widgets** have a repeater key and per-item text/link (e.g. accordion: tabs with tab_title, tab_content). **Price-table** has title and features (array of strings). Control IDs match Elementor core; verify in elementor/includes/widgets/ if needed.
+* **Slot:** A single editable target: (widget, field) or (widget, item_index, field). Dictionary and apply-edits are slot-based.
+* **Match:** A **slot** contains the find string (normalized); replacement is applied only when there is **exactly one** such slot. If raw value contains find literally, replace that substring; else replace entire slot value.
+* **Page dictionary:** Ephemeral per request; list of entries `{ id, path, widget_type, field, text }` with optional `item_index`, `link_url`. One entry per text slot; link-only slots (e.g. icon) get one entry with field `link`. Built from current `_elementor_data`; used by external AI edit service. Not persisted.
 * **Path:** String of element indices (e.g. `"0/1/2"`). Index-based; valid only for the current document version.
 * **Id:** Elementor's unique element `id` (string) in the JSON; stable across reorders; preferred over path for apply-edits.
 
 ### 4.2 Key Attributes
-* **Replace request:** `url` (required), `find` (required), `replace` (required), `widget_types` (optional, default `['text-editor','heading']`).
-* **Replace result:** `status` ∈ { `updated` | `not_found` | `ambiguous` }, `post_id`, `matches_found`, `matches_replaced`; `candidates` only when `ambiguous`.
-* **Inspect result:** `post_id`, `data_structure`, `elements_count`, `text_fields` (id, widget_type, field, preview, path).
+* **Replace request:** `url` (required), `find` (required), `replace` (required), `widget_types` (optional, default `['text-editor','heading']`). Replace-text searches all supported text slots for the given widget_types.
+* **Replace result:** `status` ∈ { `updated` | `not_found` | `ambiguous` }, `post_id`, `matches_found`, `matches_replaced`; `candidates` only when `ambiguous` (each candidate includes field, item_index when applicable).
+* **Inspect result:** `post_id`, `data_structure`, `elements_count`, `text_fields` (id, widget_type, field, preview, path; item_index when applicable). Optional query param `widget_types` (default text-editor, heading).
 * **LlmEdit request:** `url` (required), `instruction` (required), `widget_types` (optional).
 * **LlmEdit result:** `status` (`ok` | `error`), `post_id`, `applied_count`, `failed` ([{ id?, path?, error }]); on service failure, 502 with `message`.
-* **ApplyEdits request:** `url` (required), `edits` (required; array of `{ id?, path?, new_text }`), `widget_types` (optional).
+* **ApplyEdits request:** `url` (required), `edits` (required; array of edit items), `widget_types` (optional). Each edit item: at least one of `id` or `path`; at least one of `new_text` or `new_url`/`new_link`; optional `field`, `item_index` (0-based). `new_link` can be `{ url, is_external?, nofollow? }`. Backward compatible: `{ id, new_text }` applies to primary text field.
 * **ApplyEdits result:** Same as LlmEdit result.
 
 ---
@@ -109,9 +109,9 @@ Brief description of each:
 * **Rules:** Resolve URL → post; load Elementor data; build dictionary (id, path, widget_type, text) via `buildPageDictionary`; call `LlmClient::requestEdits(dictionary, instruction)`; for each edit use `replaceById` if id present else `replaceByPath`; save once if any applied; regenerate cache. Empty edits = success with `applied_count: 0`.
 
 ### ApplyEdits (POST /ai-elementor/v1/apply-edits)
-* **Input:** `url`, `edits` (array of `{ id?, path?, new_text }`), optional `widget_types`.
+* **Input:** `url`, `edits` (array of edit items), optional `widget_types`. Each edit: at least one of `id` or `path`; at least one of `new_text` or `new_url`/`new_link`; optional `field`, `item_index`. Backward compatible: `{ id, new_text }` applies to primary text field.
 * **Output:** Same as LlmEdit (status, post_id, applied_count, failed).
-* **Rules:** No AI service call; same permission and apply logic (prefer id over path). For clients that call their own AI service and only need to apply edits.
+* **Rules:** No AI service call; same permission and apply logic (prefer id over path). Text edits use replaceById/replaceByPath with optional field/item_index; URL edits use replaceUrlById/replaceUrlByPath with optional item_index. For clients that call their own AI service and only need to apply edits.
 
 ### CreateApplicationPassword (POST /ai-elementor/v1/create-application-password)
 * **Input:** None (POST body optional).
@@ -145,21 +145,26 @@ ElementorDataStore
   save(post_id: int, data: array): bool
 
 ElementorTraverser
-  findAndMaybeReplace(&data, find, replace, widget_types): { matches_found, matches_replaced, candidates, data }  # match = contains (normalized)
-  buildPageDictionary(data, widget_types, max_text_len?): [{ id, path, widget_type, text }, ...]
-  replaceByPath(&data, path, new_text, widget_types): bool
-  replaceById(&data, id, new_text, widget_types): bool
-  collectAllTextFields(data, widget_types): { data_structure, elements_count, text_fields }  # text_fields include id
+  findAndMaybeReplace(&data, find, replace, widget_types): { matches_found, matches_replaced, candidates, data }  # match = contains (normalized); searches all text slots
+  buildPageDictionary(data, widget_types?, max_text_len?): [{ id, path, widget_type, field, text, item_index?, link_url? }, ...]
+  replaceByPath(&data, path, new_text, widget_types, field?, item_index?): bool
+  replaceById(&data, id, new_text, widget_types, field?, item_index?): bool
+  replaceUrlByPath(&data, path, new_url_or_link, widget_types, item_index?): bool
+  replaceUrlById(&data, id, new_url_or_link, widget_types, item_index?): bool
+  collectAllTextFields(data, widget_types?): { data_structure, elements_count, text_fields }  # text_fields: id, widget_type, field, preview, path, item_index?
+  getTextAtSlot(node, widget_type, field?, item_index?): ?string   # for verification
+  getLinkUrlAtSlot(node, widget_type, item_index?): ?string
+  DEFAULT_WIDGET_TYPES, SUPPORTED_WIDGET_TYPES  # constants
 
 LlmClient
-  requestEdits(dictionary: array, instruction): { edits: [{ id?, path?, new_text }], error: string|null }  # config: AI service URL only
+  requestEdits(dictionary: array, instruction): { edits: [...], error: string|null }  # edits: id?, path?, field?, item_index?, new_text?, new_url?, new_link?; config: AI service URL only
 
 Normalizer
   normalize(text: ?string): string
   preview_snippet(normalized_text: string, max_length?): string
 
 CacheRegenerator
-  regenerate(post_id: int): void   # deletes _elementor_css meta, then Elementor clear_cache; no-op if Elementor absent
+  regenerate(post_id: int): void   # deletes _elementor_css meta; files_manager clear_cache; elementor/css_file/post/parse for doc; elementor/core/files/clear_cache; no-op if Elementor absent
 ```
 
 ### Support
@@ -183,10 +188,10 @@ Interfaces are implicit (PHP classes); infrastructure (WP meta, Elementor API) i
 ## 7. Data & State
 
 * **Persistence:** WordPress post meta `_elementor_data` (JSON string or array; Elementor document or raw elements). Read/write via `ElementorDataStore`; `wp_slash` used on save to match WordPress behavior. Option `ai_elementor_sync_ui_log` stores UI log entries (array, max 100). Options `ai_elementor_sync_ai_service_url`, `ai_elementor_sync_llm_register_url` for Settings.
-* **Relevant state:** Elementor element tree (nested `elements`, `settings`); match count and candidates during replace; page dictionary is ephemeral (built per request, not stored). CacheRegenerator deletes `_elementor_css` post meta so Elementor regenerates CSS on next load.
+* **Relevant state:** Elementor element tree (nested `elements`, `settings`); match count and candidates during replace; page dictionary is ephemeral (built per request, not stored). CacheRegenerator deletes `_elementor_css` post meta, calls files_manager clear_cache, triggers post-specific parse and clear_cache action so frontend picks up changes.
 * **Paths:** Index-based (e.g. "0/1/2"); valid only for the current document. If Elementor data is edited elsewhere, indices can change. **Id** is stable across reorders.
 * **Invariants:** Replace (replace-text) is written only when exactly one widget contains the find (normalized); replacement is substring or whole-widget. Apply (llm-edit / apply-edits) writes only when id or path resolves to a target widget.
-* **Why editing the element directly didn't work:** Elementor data is stored in post meta; WordPress applies **wp_slash()** when saving meta (escaping backslashes and quotes). Editing the JSON directly (e.g. in the DB) without the same slashing can cause double-escaped or corrupted data on the next read. Elementor also caches generated CSS and files; even if `_elementor_data` is updated correctly, the frontend may show old content until caches are cleared. The plugin avoids this by: read via `get_post_meta`, modify in memory, save with `update_post_meta` and `wp_slash($json)` (with delete+add fallback if update returns false for a changed value), then **CacheRegenerator** (which deletes `_elementor_css` post meta and calls Elementor clear_cache) so Elementor refreshes its caches.
+* **Why editing the element directly didn't work:** Elementor data is stored in post meta; WordPress applies **wp_slash()** when saving meta (escaping backslashes and quotes). Editing the JSON directly (e.g. in the DB) without the same slashing can cause double-escaped or corrupted data on the next read. Elementor also caches generated CSS and files; even if `_elementor_data` is updated correctly, the frontend may show old content until caches are cleared. The plugin avoids this by: read via `get_post_meta`, modify in memory, save with **delete+add then update fallback** and `wp_slash($json)` so the DB is always physically updated (fixes cache/no-op issues), then **CacheRegenerator** (deletes `_elementor_css`, clear_cache, post parse, clear_cache action) so Elementor refreshes its caches.
 
 ---
 
@@ -217,17 +222,19 @@ Interfaces are implicit (PHP classes); infrastructure (WP meta, Elementor API) i
 * **Batch in one request:** Multiple edits from one service call are applied in sequence on the same in-memory tree, then one save; no PHP-level parallelism.
 * **Direct apply-edits endpoint:** Enables clients to use their own AI service and only use this plugin to apply; useful for testing and when the WordPress server cannot reach the service.
 * **URL-based entry:** Aligns with “page by URL” usage; resolution uses `url_to_postid` and `get_page_by_path` fallback.
-* **Request encoding fix (Plugin):** Latin-1 / Windows-1252 request bodies are converted to UTF-8 for replace-text, llm-edit, and apply-edits to support tools that send non-UTF-8 JSON.
+* **Request encoding fix (Plugin):** Latin-1 / Windows-1252 request bodies are converted to UTF-8 for replace-text, llm-edit, and apply-edits (mb_convert_encoding; iconv fallback) to support tools that send non-UTF-8 JSON.
 * **No abstract repository interface:** Data store is concrete; acceptable for single persistence mechanism (WP meta).
-* **CacheRegenerator best-effort:** Elementor version differences handled by defensive checks; failures are silent to avoid breaking the main flow.
+* **ElementorDataStore save strategy:** Always delete+add then update fallback (no "unchanged = success") so the DB is physically written and cache/no-op issues (e.g. verified_after_save) are avoided.
+* **CacheRegenerator best-effort:** Deletes `_elementor_css`, files_manager clear_cache, post-specific parse, clear_cache action; Elementor version differences handled by defensive checks; failures are silent to avoid breaking the main flow.
 * **Versioning:** On every release or functional change, update Version in plugin header and AI_ELEMENTOR_SYNC_VERSION in ai-elementor-sync.php.
 
 ---
 
 ## 11. Evolution Notes
 
-* **Potential extensions:** More widget types, optional case-insensitive match, batch by URL list; dry-run for AI edits (return proposed edits without applying); rate limiting or optimistic locking; optional `match=exact` for replace-text to force exact equality.
-* **Limitations:** Only two widget types by default; no undo; no conflict detection—concurrent edits from multiple users are last-write-wins; path is valid only for current document version (use id for stability).
+* **Plan 1 (implemented):** More widgets (button, icon, image-box, icon-box, testimonial, counter, animated-headline, flip-box, icon-list, accordion, tabs, price-list, price-table), multi-field and repeater support, URL/link editing (new_url/new_link in apply-edits), extended dictionary (field, item_index, link_url), backward-compatible apply-edits (primary field when field omitted).
+* **Potential extensions:** Optional case-insensitive match, batch by URL list; dry-run for AI edits (return proposed edits without applying); rate limiting or optimistic locking; optional `match=exact` for replace-text to force exact equality.
+* **Limitations:** Default widget_types remain text-editor and heading for backward compatibility; clients can pass full SUPPORTED_WIDGET_TYPES for full coverage; no undo; no conflict detection—concurrent edits are last-write-wins; path is valid only for current document version (use id for stability).
 * **Risks:** Elementor schema or API changes may require updates to traverser or cache regeneration; large pages may hit token limits (dictionary truncation via `max_text_len`); external service cost and latency.
 
 ---
@@ -246,5 +253,5 @@ Interfaces are implicit (PHP classes); infrastructure (WP meta, Elementor API) i
 
 ## 13. Last Updated
 
-* **Date:** 2026-01-30  
-* **Change context:** Current state: Admin UI tabs include **Settings** (AI service URL default Render.com, LLM register URL) and **Log** (view/clear UI log; `edit_posts`). REST: GET/POST settings, GET log, POST clear-log; SettingsController; Logger has log_ui, get_ui_log, clear_ui_log; UI log always written (option `ai_elementor_sync_ui_log`, max 100). ElementorDataStore::save robust (unchanged = success, delete+add fallback, UI log on failure). CacheRegenerator deletes `_elementor_css` then clear_cache. LlmClient logs request/response/errors to UI log. Admin page capability `edit_posts`; log/settings permissions as above. Version 1.2.0 (constant); plugin header may differ.
+* **Date:** 2026-02-01  
+* **Change context:** **Plan 1 implemented:** More widgets (button, icon, image-box, icon-box, testimonial, counter, animated-headline, flip-box, icon-list, accordion, tabs, price-list, price-table); multi-field and repeater support in ElementorTraverser (WIDGET_CONFIG, buildPageDictionary, collectAllTextFields, replaceByPath/replaceById with field/item_index, replaceUrlByPath/replaceUrlById); findAndMaybeReplace across all text slots; apply-edits extended (field, item_index, new_url/new_link); LlmClient and LlmEditController normalize and apply URL edits; verification uses getTextAtSlot/getLinkUrlAtSlot; inspect optional widget_types; Admin placeholder and help text updated; SYSTEM_ARTIFACT and README updated.

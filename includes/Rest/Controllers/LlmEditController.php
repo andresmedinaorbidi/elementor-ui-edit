@@ -32,7 +32,7 @@ final class LlmEditController {
 		}
 		$url = isset( $params['url'] ) && is_string( $params['url'] ) ? trim( $params['url'] ) : '';
 		$instruction = isset( $params['instruction'] ) && is_string( $params['instruction'] ) ? $params['instruction'] : null;
-		$widget_types = isset( $params['widget_types'] ) && is_array( $params['widget_types'] ) ? $params['widget_types'] : [ 'text-editor', 'heading' ];
+		$widget_types = isset( $params['widget_types'] ) && is_array( $params['widget_types'] ) ? $params['widget_types'] : ElementorTraverser::DEFAULT_WIDGET_TYPES;
 
 		if ( $url === '' || $instruction === null ) {
 			return Errors::error_response( 'Missing required parameters: url, instruction.', 0, 400 );
@@ -104,7 +104,7 @@ final class LlmEditController {
 		}
 		$url = isset( $params['url'] ) && is_string( $params['url'] ) ? trim( $params['url'] ) : '';
 		$edits = isset( $params['edits'] ) && is_array( $params['edits'] ) ? $params['edits'] : null;
-		$widget_types = isset( $params['widget_types'] ) && is_array( $params['widget_types'] ) ? $params['widget_types'] : [ 'text-editor', 'heading' ];
+		$widget_types = isset( $params['widget_types'] ) && is_array( $params['widget_types'] ) ? $params['widget_types'] : ElementorTraverser::DEFAULT_WIDGET_TYPES;
 
 		if ( $url === '' || $edits === null ) {
 			return Errors::error_response( 'Missing required parameters: url, edits.', 0, 400 );
@@ -129,13 +129,24 @@ final class LlmEditController {
 			return Errors::error_response( 'No Elementor data found for this post.', $post_id, 400 );
 		}
 
-		$normalized = [];
+		$normalized = self::normalize_edit_items( $edits );
+		if ( empty( $normalized ) ) {
+			return Errors::error_response( 'No valid edits: each item must have id or path, and new_text or new_url/new_link.', $post_id, 400 );
+		}
+
+		return self::apply_edits_to_data( $data, $post_id, $normalized, $widget_types );
+	}
+
+	/**
+	 * Normalize edit items: at least one of id/path; at least one of new_text or new_url/new_link. Pass through field, item_index.
+	 *
+	 * @param array $edits Raw edits array from request.
+	 * @return array<int, array{ id?: string, path?: string, field?: string, item_index?: int, new_text?: string, new_url?: string, new_link?: array }>
+	 */
+	private static function normalize_edit_items( array $edits ): array {
+		$out = [];
 		foreach ( $edits as $item ) {
 			if ( ! is_array( $item ) ) {
-				continue;
-			}
-			$new_text = array_key_exists( 'new_text', $item ) ? $item['new_text'] : null;
-			if ( $new_text === null ) {
 				continue;
 			}
 			$id = isset( $item['id'] ) && is_string( $item['id'] ) ? trim( $item['id'] ) : '';
@@ -143,59 +154,98 @@ final class LlmEditController {
 			if ( $id === '' && $path === '' ) {
 				continue;
 			}
-			$entry = [ 'new_text' => is_string( $new_text ) ? $new_text : (string) $new_text ];
+			$new_text = array_key_exists( 'new_text', $item ) ? $item['new_text'] : null;
+			$new_url = array_key_exists( 'new_url', $item ) ? $item['new_url'] : null;
+			$new_link = array_key_exists( 'new_link', $item ) && is_array( $item['new_link'] ) ? $item['new_link'] : null;
+			$has_text = $new_text !== null;
+			$has_url = ( $new_url !== null && ( is_string( $new_url ) || is_numeric( $new_url ) ) ) || ( $new_link !== null && isset( $new_link['url'] ) );
+			if ( ! $has_text && ! $has_url ) {
+				continue;
+			}
+			$entry = [];
 			if ( $id !== '' ) {
 				$entry['id'] = $id;
 			}
 			if ( $path !== '' ) {
 				$entry['path'] = $path;
 			}
-			$normalized[] = $entry;
+			if ( isset( $item['field'] ) && is_string( $item['field'] ) && $item['field'] !== '' ) {
+				$entry['field'] = trim( $item['field'] );
+			}
+			if ( isset( $item['item_index'] ) && is_numeric( $item['item_index'] ) ) {
+				$entry['item_index'] = (int) $item['item_index'];
+			}
+			if ( $has_text ) {
+				$entry['new_text'] = is_string( $new_text ) ? $new_text : (string) $new_text;
+			}
+			if ( $new_url !== null && ( is_string( $new_url ) || is_numeric( $new_url ) ) ) {
+				$entry['new_url'] = (string) $new_url;
+			}
+			if ( $new_link !== null && isset( $new_link['url'] ) ) {
+				$entry['new_link'] = $new_link;
+			}
+			$out[] = $entry;
 		}
-
-		return self::apply_edits_to_data( $data, $post_id, $normalized, $widget_types );
+		return $out;
 	}
 
 	/**
 	 * Apply a list of edits to in-memory data, save once if any applied, return response.
-	 * Each edit may have id (preferred) and/or path; prefer id when present.
+	 * Each edit may have id (preferred) and/or path; field and item_index optional. new_text or new_url/new_link.
 	 *
 	 * @param array $data         Elementor data (passed by reference; will be mutated).
 	 * @param int   $post_id      Post ID.
-	 * @param array $edits        List of { id?, path?, new_text }.
+	 * @param array $edits        List of { id?, path?, field?, item_index?, new_text?, new_url?, new_link? }.
 	 * @param array $widget_types Allowed widget types.
 	 * @return WP_REST_Response
 	 */
 	private static function apply_edits_to_data( array &$data, int $post_id, array $edits, array $widget_types ): WP_REST_Response {
 		$applied_count = 0;
 		$failed = [];
-		$applied_edits = []; // Track { id?, path?, new_text, modified_path? } for verification.
+		$applied_edits = []; // Track for verification: id, path, modified_path, field?, item_index?, new_text? or new_url/new_link?, type.
 
 		foreach ( $edits as $edit ) {
-			$new_text = $edit['new_text'];
 			$id = $edit['id'] ?? '';
 			$path = $edit['path'] ?? '';
+			$field = isset( $edit['field'] ) && is_string( $edit['field'] ) ? $edit['field'] : null;
+			$item_index = isset( $edit['item_index'] ) ? (int) $edit['item_index'] : null;
+			$new_text = $edit['new_text'] ?? null;
+			$new_url = $edit['new_url'] ?? null;
+			$new_link = $edit['new_link'] ?? null;
+			$is_url_edit = $new_url !== null || ( $new_link !== null && isset( $new_link['url'] ) );
+			$url_value = $new_link !== null && isset( $new_link['url'] ) ? (string) $new_link['url'] : ( $new_url !== null ? (string) $new_url : '' );
+
 			$ok = false;
-			if ( $id !== '' ) {
-				$ok = ElementorTraverser::replaceById( $data, $id, $new_text, $widget_types );
+			if ( $is_url_edit ) {
+				if ( $id !== '' ) {
+					$ok = ElementorTraverser::replaceUrlById( $data, $id, $new_link ?? $url_value, $widget_types, $item_index );
+				}
+				if ( ! $ok && $path !== '' ) {
+					$ok = ElementorTraverser::replaceUrlByPath( $data, $path, $new_link ?? $url_value, $widget_types, $item_index );
+				}
+			} else {
+				if ( $id !== '' ) {
+					$ok = ElementorTraverser::replaceById( $data, $id, $new_text, $widget_types, $field, $item_index );
+				}
+				if ( ! $ok && $path !== '' ) {
+					$ok = ElementorTraverser::replaceByPath( $data, $path, $new_text, $widget_types, $field, $item_index );
+				}
 			}
-			if ( ! $ok && $path !== '' ) {
-				$ok = ElementorTraverser::replaceByPath( $data, $path, $new_text, $widget_types );
-			}
+
 			if ( $ok ) {
 				$applied_count++;
-				$modified_path = null;
-				if ( $id !== '' ) {
-					$modified_path = ElementorTraverser::findPathById( $data, $id );
-				} else {
-					$modified_path = $path;
-				}
-				$applied_edits[] = [
-					'id'             => $id !== '' ? $id : null,
-					'path'           => $path !== '' ? $path : null,
-					'modified_path'  => $modified_path,
-					'new_text'       => $new_text,
-				];
+				$modified_path = $id !== '' ? ElementorTraverser::findPathById( $data, $id ) : $path;
+				$applied_edits[] = array_merge(
+					[
+						'id'            => $id !== '' ? $id : null,
+						'path'          => $path !== '' ? $path : null,
+						'modified_path' => $modified_path,
+						'type'          => $is_url_edit ? 'url' : 'text',
+					],
+					$field !== null ? [ 'field' => $field ] : [],
+					$item_index !== null ? [ 'item_index' => $item_index ] : [],
+					$is_url_edit ? [ 'new_url' => $url_value ] : [ 'new_text' => $new_text ],
+				);
 			} else {
 				$reason = self::get_edit_failure_reason( $data, $id, $path, $widget_types );
 				$failed[] = [
@@ -245,10 +295,10 @@ final class LlmEditController {
 	}
 
 	/**
-	 * Check that $data (in memory) has each applied edit's new_text at the node. Diagnostic for reference bugs.
+	 * Check that $data (in memory) has each applied edit at the correct slot. Diagnostic for reference bugs.
 	 *
 	 * @param array $data          Elementor data (same array we're about to save).
-	 * @param array $applied_edits  List of { id?, path?, new_text, modified_path? }.
+	 * @param array $applied_edits  List of applied edits (type, field?, item_index?, new_text? or new_url?).
 	 * @param array $widget_types  Allowed widget types.
 	 * @return array{ all_verified: bool, details: array }
 	 */
@@ -258,7 +308,6 @@ final class LlmEditController {
 		foreach ( $applied_edits as $applied ) {
 			$id = $applied['id'] ?? '';
 			$path = $applied['modified_path'] ?? $applied['path'] ?? '';
-			$new_text = $applied['new_text'] ?? '';
 			$node = null;
 			if ( $id !== '' && $id !== null ) {
 				$node = ElementorTraverser::findNodeById( $data, $id );
@@ -269,10 +318,16 @@ final class LlmEditController {
 			$found_in_memory = false;
 			if ( $node !== null && is_array( $node ) ) {
 				$widget_type = $node['widgetType'] ?? '';
-				$field = $widget_type === 'heading' ? 'title' : ( $widget_type === 'text-editor' ? 'editor' : null );
-				if ( $field !== null ) {
-					$current = $node['settings'][ $field ] ?? '';
-					$found_in_memory = (string) $current === (string) $new_text;
+				$field = $applied['field'] ?? null;
+				$item_index = isset( $applied['item_index'] ) ? (int) $applied['item_index'] : null;
+				if ( ( $applied['type'] ?? '' ) === 'url' ) {
+					$expected_url = $applied['new_url'] ?? '';
+					$current = ElementorTraverser::getLinkUrlAtSlot( $node, $widget_type, $item_index );
+					$found_in_memory = (string) $current === (string) $expected_url;
+				} else {
+					$expected_text = $applied['new_text'] ?? '';
+					$current = ElementorTraverser::getTextAtSlot( $node, $widget_type, $field, $item_index );
+					$found_in_memory = (string) $current === (string) $expected_text;
 				}
 			}
 			$details[] = [
@@ -288,11 +343,11 @@ final class LlmEditController {
 	}
 
 	/**
-	 * Re-read _elementor_data and check if each applied edit's new_text is present at the node. Diagnostic for save/cache issues.
+	 * Re-read _elementor_data and check if each applied edit is present at the slot. Diagnostic for save/cache issues.
 	 *
 	 * @param int   $post_id        Post ID.
-	 * @param array $applied_edits List of { id?, path?, new_text, modified_path? }.
-	 * @param array $widget_types  Allowed widget types.
+	 * @param array $applied_edits  List of applied edits (type, field?, item_index?, new_text? or new_url?).
+	 * @param array $widget_types   Allowed widget types.
 	 * @return array{ all_verified: bool, details: array } Details per edit: path/id, expected_snippet, found_in_meta.
 	 */
 	private static function verify_applied_edits_in_meta( int $post_id, array $applied_edits, array $widget_types ): array {
@@ -305,7 +360,6 @@ final class LlmEditController {
 		foreach ( $applied_edits as $applied ) {
 			$id = $applied['id'] ?? '';
 			$path = $applied['modified_path'] ?? $applied['path'] ?? '';
-			$new_text = $applied['new_text'] ?? '';
 			$node = null;
 			if ( $id !== '' && $id !== null ) {
 				$node = ElementorTraverser::findNodeById( $reloaded, $id );
@@ -314,13 +368,21 @@ final class LlmEditController {
 				$node = ElementorTraverser::findNodeByPath( $reloaded, $path );
 			}
 			$found_in_meta = false;
-			$expected_snippet = mb_strlen( $new_text ) > 80 ? mb_substr( $new_text, 0, 80 ) . '...' : $new_text;
+			$expected_snippet = '';
 			if ( $node !== null && is_array( $node ) ) {
 				$widget_type = $node['widgetType'] ?? '';
-				$field = $widget_type === 'heading' ? 'title' : ( $widget_type === 'text-editor' ? 'editor' : null );
-				if ( $field !== null ) {
-					$current = $node['settings'][ $field ] ?? '';
-					$found_in_meta = (string) $current === (string) $new_text;
+				$field = $applied['field'] ?? null;
+				$item_index = isset( $applied['item_index'] ) ? (int) $applied['item_index'] : null;
+				if ( ( $applied['type'] ?? '' ) === 'url' ) {
+					$expected_url = $applied['new_url'] ?? '';
+					$current = ElementorTraverser::getLinkUrlAtSlot( $node, $widget_type, $item_index );
+					$found_in_meta = (string) $current === (string) $expected_url;
+					$expected_snippet = mb_strlen( $expected_url ) > 80 ? mb_substr( $expected_url, 0, 80 ) . '...' : $expected_url;
+				} else {
+					$expected_text = $applied['new_text'] ?? '';
+					$current = ElementorTraverser::getTextAtSlot( $node, $widget_type, $field, $item_index );
+					$found_in_meta = (string) $current === (string) $expected_text;
+					$expected_snippet = mb_strlen( $expected_text ) > 80 ? mb_substr( $expected_text, 0, 80 ) . '...' : $expected_text;
 				}
 			}
 			$details[] = [

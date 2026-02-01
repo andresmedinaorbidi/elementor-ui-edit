@@ -32,7 +32,7 @@ final class ReplaceTextController {
 		$url = isset( $params['url'] ) && is_string( $params['url'] ) ? trim( $params['url'] ) : '';
 		$find = isset( $params['find'] ) && is_string( $params['find'] ) ? $params['find'] : null;
 		$replace = array_key_exists( 'replace', $params ) && is_string( $params['replace'] ) ? $params['replace'] : null;
-		$widget_types = isset( $params['widget_types'] ) && is_array( $params['widget_types'] ) ? $params['widget_types'] : [ 'text-editor', 'heading' ];
+		$widget_types = isset( $params['widget_types'] ) && is_array( $params['widget_types'] ) ? $params['widget_types'] : ElementorTraverser::DEFAULT_WIDGET_TYPES;
 
 		if ( $url === '' || $find === null || $replace === null ) {
 			return Errors::error_response( 'Missing required parameters: url, find, replace.', 0, 400 );
@@ -117,7 +117,18 @@ final class ReplaceTextController {
 			], 200 );
 		}
 
-		$widget_types = [ 'text-editor', 'heading' ];
+		$widget_types_param = $request->get_param( 'widget_types' );
+		$widget_types = ElementorTraverser::DEFAULT_WIDGET_TYPES;
+		if ( is_array( $widget_types_param ) && ! empty( $widget_types_param ) ) {
+			$widget_types = array_values( array_filter( array_map( function ( $v ) {
+				return is_string( $v ) ? trim( $v ) : null;
+			}, $widget_types_param ) ) );
+		} elseif ( is_string( $widget_types_param ) && $widget_types_param !== '' ) {
+			$widget_types = array_values( array_filter( array_map( 'trim', explode( ',', $widget_types_param ) ) ) );
+		}
+		if ( empty( $widget_types ) ) {
+			$widget_types = ElementorTraverser::DEFAULT_WIDGET_TYPES;
+		}
 		$info = ElementorTraverser::collectAllTextFields( $data, $widget_types );
 
 		return new WP_REST_Response( [

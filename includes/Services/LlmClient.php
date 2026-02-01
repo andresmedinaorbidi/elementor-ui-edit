@@ -129,10 +129,11 @@ final class LlmClient {
 	}
 
 	/**
-	 * Normalize and validate edits: each item must have new_text and at least one of id or path.
+	 * Normalize and validate edits: each item must have at least one of id or path, and at least one of new_text or new_url/new_link.
+	 * Passes through field, item_index, new_url, new_link for extended apply-edits contract.
 	 *
 	 * @param array $edits Raw parsed array.
-	 * @return array<int, array{ id?: string, path?: string, new_text: string }>
+	 * @return array<int, array{ id?: string, path?: string, field?: string, item_index?: int, new_text?: string, new_url?: string, new_link?: array }>
 	 */
 	private static function normalize_edits( array $edits ): array {
 		$out = [];
@@ -140,21 +141,40 @@ final class LlmClient {
 			if ( ! is_array( $item ) ) {
 				continue;
 			}
-			$new_text = array_key_exists( 'new_text', $item ) ? $item['new_text'] : null;
-			if ( $new_text === null ) {
-				continue;
-			}
 			$id = isset( $item['id'] ) && is_string( $item['id'] ) ? trim( $item['id'] ) : '';
 			$path = isset( $item['path'] ) && is_string( $item['path'] ) ? trim( $item['path'] ) : '';
 			if ( $id === '' && $path === '' ) {
 				continue;
 			}
-			$entry = [ 'new_text' => is_string( $new_text ) ? $new_text : (string) $new_text ];
+			$new_text = array_key_exists( 'new_text', $item ) ? $item['new_text'] : null;
+			$new_url = array_key_exists( 'new_url', $item ) ? $item['new_url'] : null;
+			$new_link = array_key_exists( 'new_link', $item ) && is_array( $item['new_link'] ) ? $item['new_link'] : null;
+			$has_text = $new_text !== null;
+			$has_url = ( $new_url !== null && ( is_string( $new_url ) || is_numeric( $new_url ) ) ) || ( $new_link !== null && isset( $new_link['url'] ) );
+			if ( ! $has_text && ! $has_url ) {
+				continue;
+			}
+			$entry = [];
 			if ( $id !== '' ) {
 				$entry['id'] = $id;
 			}
 			if ( $path !== '' ) {
 				$entry['path'] = $path;
+			}
+			if ( isset( $item['field'] ) && is_string( $item['field'] ) && $item['field'] !== '' ) {
+				$entry['field'] = trim( $item['field'] );
+			}
+			if ( isset( $item['item_index'] ) && is_numeric( $item['item_index'] ) ) {
+				$entry['item_index'] = (int) $item['item_index'];
+			}
+			if ( $has_text ) {
+				$entry['new_text'] = is_string( $new_text ) ? $new_text : (string) $new_text;
+			}
+			if ( $new_url !== null && ( is_string( $new_url ) || is_numeric( $new_url ) ) ) {
+				$entry['new_url'] = (string) $new_url;
+			}
+			if ( $new_link !== null && isset( $new_link['url'] ) ) {
+				$entry['new_link'] = $new_link;
 			}
 			$out[] = $entry;
 		}

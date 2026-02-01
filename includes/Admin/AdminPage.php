@@ -118,7 +118,7 @@ final class AdminPage {
 
 			<div id="tab-inspect" class="ai-elementor-sync-panel" role="tabpanel">
 				<h2><?php esc_html_e( 'Inspect', 'ai-elementor-sync' ); ?></h2>
-				<p><?php esc_html_e( 'Get post ID, structure, and text fields for a page URL.', 'ai-elementor-sync' ); ?></p>
+				<p><?php esc_html_e( 'Get post ID, structure, and text/link fields for a page URL. Supports heading, text-editor, button, image-box, icon-box, accordion, tabs, and more.', 'ai-elementor-sync' ); ?></p>
 				<form id="form-inspect" class="ai-elementor-sync-form">
 					<p>
 						<label for="inspect-url"><?php esc_html_e( 'Page URL', 'ai-elementor-sync' ); ?></label>
@@ -175,7 +175,7 @@ final class AdminPage {
 
 			<div id="tab-apply-edits" class="ai-elementor-sync-panel hidden" role="tabpanel">
 				<h2><?php esc_html_e( 'Apply edits', 'ai-elementor-sync' ); ?></h2>
-				<p><?php esc_html_e( 'Apply edits directly (no AI). Each edit: id or path, and new_text.', 'ai-elementor-sync' ); ?></p>
+				<p><?php esc_html_e( 'Apply edits directly (no AI). Each edit: id or path; new_text or new_url/new_link; optional field and item_index for specific slots.', 'ai-elementor-sync' ); ?></p>
 				<form id="form-apply-edits" class="ai-elementor-sync-form">
 					<p>
 						<label for="apply-url"><?php esc_html_e( 'Page URL', 'ai-elementor-sync' ); ?></label>
@@ -183,7 +183,7 @@ final class AdminPage {
 					</p>
 					<p>
 						<label for="apply-edits"><?php esc_html_e( 'Edits (JSON array)', 'ai-elementor-sync' ); ?></label>
-						<textarea id="apply-edits" name="edits" class="large-text code" rows="8" placeholder='[{"id":"abc123","new_text":"Hello"},{"path":"0/1/2","new_text":"World"}]' required></textarea>
+						<textarea id="apply-edits" name="edits" class="large-text code" rows="8" placeholder='[{"id":"abc123","new_text":"Hello"},{"path":"0/1/2","field":"description_text","new_text":"World"},{"id":"xyz","new_url":"https://example.com"}]' required></textarea>
 					</p>
 					<p>
 						<button type="submit" class="button button-primary"><?php esc_html_e( 'Apply edits', 'ai-elementor-sync' ); ?></button>
