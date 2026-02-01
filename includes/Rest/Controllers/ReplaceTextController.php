@@ -75,6 +75,7 @@ final class ReplaceTextController {
 		if ( $matches_replaced === 1 ) {
 			$saved = ElementorDataStore::save( $post_id, $data );
 			if ( ! $saved ) {
+				Logger::log_ui( 'error', 'Failed to save Elementor data (replace-text).', [ 'post_id' => $post_id ] );
 				return Errors::error_response( 'Failed to save Elementor data.', $post_id, 500 );
 			}
 			CacheRegenerator::regenerate( $post_id );

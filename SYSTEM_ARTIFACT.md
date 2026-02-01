@@ -42,29 +42,30 @@ includes/
   Admin/
     AdminPage.php              # Settings submenu, admin UI page, enqueue assets (admin.css, admin.js)
   Rest/
-    Routes.php                 # Route registration, permission callbacks (incl. create-application-password)
+    Routes.php                 # Route registration, permission callbacks (incl. create-application-password, settings, log)
     Controllers/
       ReplaceTextController.php # replace_text, inspect
       LlmEditController.php     # llm_edit, apply_edits
       ApplicationPasswordController.php # create_application_password
+      SettingsController.php   # get_settings, update_settings, get_log, clear_log
   Services/
     UrlResolver.php            # URL → post_id
-    ElementorDataStore.php     # get/save _elementor_data
+    ElementorDataStore.php     # get/save _elementor_data (robust save: unchanged = success, fallback delete+add)
     ElementorTraverser.php     # find/replace (containment), buildPageDictionary, replaceByPath, replaceById, collectAllTextFields
     Normalizer.php             # normalize text for matching, preview_snippet
-    LlmClient.php              # requestEdits (dictionary array, instruction); config: AI service URL only
-    CacheRegenerator.php       # Elementor cache/CSS regeneration
+    LlmClient.php              # requestEdits (dictionary array, instruction); config: AI service URL only; logs to UI log
+    CacheRegenerator.php       # Elementor cache/CSS regeneration; deletes _elementor_css meta, then clear_cache
   Support/
     Errors.php                 # REST error response helpers
-    Logger.php                 # WP_DEBUG logging
+    Logger.php                 # log (always UI log + error_log when WP_DEBUG), log_ui, get_ui_log, clear_ui_log
 ```
 
 Brief description of each:
 * **Plugin:** Bootstrap and REST wiring; fixes request body encoding for replace-text, llm-edit, and apply-edits routes; inits AdminPage.
-* **Admin:** Settings submenu “AI Elementor Sync”; single page with tabs for Inspect, Replace text, LLM edit, Apply edits, and Application password. Uses cookie + nonce to call REST endpoints; “Create application password” calls create-application-password; “Register with LLM app” POSTs site_url, username, application_password to optional LLM register URL (option `ai_elementor_sync_llm_register_url` pre-fills the field).
-* **Rest:** Delivery layer; routes, permission checks, controllers that orchestrate services.
-* **Services:** Application logic (traverser, normalizer, LLM client) and infrastructure (data store, URL resolution, cache).
-* **Support:** Cross-cutting helpers (errors, logging).
+* **Admin:** Settings submenu “AI Elementor Sync”; single page with tabs: **Inspect**, **Replace text**, **LLM edit**, **Apply edits**, **Application password**, **Settings**, **Log**. Admin page capability: `edit_posts`. **Settings** tab: AI service URL (default Render.com), LLM register URL. **Log** tab: view/clear UI log (newest-first display). Uses cookie + nonce to call REST endpoints; “Create application password” calls create-application-password; “Register with LLM app” POSTs site_url, username, application_password to optional LLM register URL (option `ai_elementor_sync_llm_register_url` pre-fills the field).
+* **Rest:** Delivery layer; routes, permission checks, controllers that orchestrate services. Settings (GET/POST) require `manage_options`; log (GET) and clear-log (POST) require `edit_posts`.
+* **Services:** Application logic (traverser, normalizer, LLM client) and infrastructure (data store, URL resolution, cache). ElementorDataStore::save treats unchanged value as success and uses delete+add fallback; logs save failures to UI log. CacheRegenerator deletes post meta `_elementor_css` then calls Elementor files_manager clear_cache so frontend shows updated content.
+* **Support:** Cross-cutting helpers (errors, logging). Logger always appends to UI log (option `ai_elementor_sync_ui_log`, max 100 entries); when WP_DEBUG, also writes to error_log.
 
 ---
 
@@ -117,8 +118,16 @@ Brief description of each:
 * **Output:** `{ password, username }` (plain password shown once) or error (e.g. app_passwords_unavailable, app_password_exists).
 * **Rules:** Requires `manage_options`. Uses `WP_Application_Passwords::create_new_application_password` for current user with name “AI Elementor Sync”. If a password with that name already exists, returns 400; revoke from profile first. Used by the admin UI so external tools (e.g. LLM app) can call this site’s REST API with Basic auth.
 
+### Settings (GET /ai-elementor/v1/settings, POST /ai-elementor/v1/settings)
+* **GET:** Returns `ai_service_url` (default `https://elementor-ui-edit-server.onrender.com/edits`), `llm_register_url`. Requires `manage_options`.
+* **POST:** Update `ai_service_url` and/or `llm_register_url`. Requires `manage_options`.
+
+### Log (GET /ai-elementor/v1/log, POST /ai-elementor/v1/clear-log)
+* **GET log:** Returns UI log entries (time, level, message, context). Requires `edit_posts`.
+* **POST clear-log:** Clears the UI log. Requires `edit_posts`. Used by the Log tab “Clear log” button.
+
 ### Admin UI and register with LLM app
-* **Admin UI:** Under Settings → AI Elementor Sync, editors can run Inspect, Replace text, LLM edit, Apply edits via forms (cookie + nonce). No Application Password needed for in-admin use.
+* **Admin UI:** Under Settings → AI Elementor Sync (capability `edit_posts`), editors can run Inspect, Replace text, LLM edit, Apply edits via forms (cookie + nonce). Settings tab configures AI service URL and LLM register URL (manage_options required for saving). Log tab shows UI log entries (newest first) and Clear log. No Application Password needed for in-admin use.
 * **Application password:** “Create application password” shows the password once with Copy; use with username for Basic auth. If Application Passwords are disabled (e.g. `allow_application_passwords` filter), the UI shows a message and hides the button.
 * **Register with LLM app:** After creating an application password, the “Register this site with LLM app” section appears. User enters the LLM app’s “register site” endpoint URL (optional option `ai_elementor_sync_llm_register_url` pre-fills it). Clicking Register POSTs `{ site_url, username, application_password }` to that URL. The **unified UI** to access and edit multiple sites is implemented in the LLM app, not in this plugin; the plugin only provides the register flow so the LLM app can store credentials and call back to each site.
 
@@ -150,7 +159,7 @@ Normalizer
   preview_snippet(normalized_text: string, max_length?): string
 
 CacheRegenerator
-  regenerate(post_id: int): void   # no-op if Elementor absent
+  regenerate(post_id: int): void   # deletes _elementor_css meta, then Elementor clear_cache; no-op if Elementor absent
 ```
 
 ### Support
@@ -161,7 +170,10 @@ Errors
   unauthorized(): WP_REST_Response
 
 Logger
-  log(message, context?: array): void   # only when WP_DEBUG
+  log(message, context?: array): void       # always appends to UI log; also error_log when WP_DEBUG
+  log_ui(level, message, context?: array): void
+  get_ui_log(): array
+  clear_ui_log(): void
 ```
 
 Interfaces are implicit (PHP classes); infrastructure (WP meta, Elementor API) is behind Services.
@@ -170,11 +182,11 @@ Interfaces are implicit (PHP classes); infrastructure (WP meta, Elementor API) i
 
 ## 7. Data & State
 
-* **Persistence:** WordPress post meta `_elementor_data` (JSON string or array; Elementor document or raw elements). Read/write via `ElementorDataStore`; `wp_slash` used on save to match WordPress behavior.
-* **Relevant state:** Elementor element tree (nested `elements`, `settings`); match count and candidates during replace; page dictionary is ephemeral (built per request, not stored).
+* **Persistence:** WordPress post meta `_elementor_data` (JSON string or array; Elementor document or raw elements). Read/write via `ElementorDataStore`; `wp_slash` used on save to match WordPress behavior. Option `ai_elementor_sync_ui_log` stores UI log entries (array, max 100). Options `ai_elementor_sync_ai_service_url`, `ai_elementor_sync_llm_register_url` for Settings.
+* **Relevant state:** Elementor element tree (nested `elements`, `settings`); match count and candidates during replace; page dictionary is ephemeral (built per request, not stored). CacheRegenerator deletes `_elementor_css` post meta so Elementor regenerates CSS on next load.
 * **Paths:** Index-based (e.g. "0/1/2"); valid only for the current document. If Elementor data is edited elsewhere, indices can change. **Id** is stable across reorders.
 * **Invariants:** Replace (replace-text) is written only when exactly one widget contains the find (normalized); replacement is substring or whole-widget. Apply (llm-edit / apply-edits) writes only when id or path resolves to a target widget.
-* **Why editing the element directly didn't work:** Elementor data is stored in post meta; WordPress applies **wp_slash()** when saving meta (escaping backslashes and quotes). Editing the JSON directly (e.g. in the DB) without the same slashing can cause double-escaped or corrupted data on the next read. Elementor also caches generated CSS and files; even if `_elementor_data` is updated correctly, the frontend may show old content until caches are cleared. The plugin avoids this by: read via `get_post_meta`, modify in memory, save with `update_post_meta` and `wp_slash($json)`, then **CacheRegenerator** so Elementor refreshes its caches.
+* **Why editing the element directly didn't work:** Elementor data is stored in post meta; WordPress applies **wp_slash()** when saving meta (escaping backslashes and quotes). Editing the JSON directly (e.g. in the DB) without the same slashing can cause double-escaped or corrupted data on the next read. Elementor also caches generated CSS and files; even if `_elementor_data` is updated correctly, the frontend may show old content until caches are cleared. The plugin avoids this by: read via `get_post_meta`, modify in memory, save with `update_post_meta` and `wp_slash($json)` (with delete+add fallback if update returns false for a changed value), then **CacheRegenerator** (which deletes `_elementor_css` post meta and calls Elementor clear_cache) so Elementor refreshes its caches.
 
 ---
 
@@ -200,7 +212,8 @@ Interfaces are implicit (PHP classes); infrastructure (WP meta, Elementor API) i
 
 * **Containment replace:** Find matches when normalized widget text **contains** the find string; replace only when exactly one widget matches; allows substring search (e.g. "normal text" matches "This is a normal text").
 * **Apply by id or path:** External service (and apply-edits) may return edits keyed by Elementor **id** (preferred, stable) or **path**; plugin prefers id when present.
-* **No API key in WordPress:** Plugin only configures the **AI edit service URL** (option or constant/filter); the external service holds the API key and can wrap LangSmith.
+* **No API key in WordPress:** Plugin only configures the **AI edit service URL** (option or constant/filter; default Render.com URL); the external service holds the API key and can wrap LangSmith.
+* **UI log:** Logger always appends to an in-admin UI log (option `ai_elementor_sync_ui_log`, max 100 entries) so editors can debug LLM/edit/save issues without WP_DEBUG; log view/clear require `edit_posts`.
 * **Batch in one request:** Multiple edits from one service call are applied in sequence on the same in-memory tree, then one save; no PHP-level parallelism.
 * **Direct apply-edits endpoint:** Enables clients to use their own AI service and only use this plugin to apply; useful for testing and when the WordPress server cannot reach the service.
 * **URL-based entry:** Aligns with “page by URL” usage; resolution uses `url_to_postid` and `get_page_by_path` fallback.
@@ -233,6 +246,5 @@ Interfaces are implicit (PHP classes); infrastructure (WP meta, Elementor API) i
 
 ## 13. Last Updated
 
-* **Date:** 2025-01-30  
-* **Author:** (fill as needed)  
-* **Change context:** Admin UI (Settings → AI Elementor Sync) with tabs for Inspect, Replace text, LLM edit, Apply edits, Application password; create-application-password REST endpoint; Register with LLM app flow (optional llm_register_url option); unified UI lives in LLM app; version bump to 1.2.0.
+* **Date:** 2026-01-30  
+* **Change context:** Current state: Admin UI tabs include **Settings** (AI service URL default Render.com, LLM register URL) and **Log** (view/clear UI log; `edit_posts`). REST: GET/POST settings, GET log, POST clear-log; SettingsController; Logger has log_ui, get_ui_log, clear_ui_log; UI log always written (option `ai_elementor_sync_ui_log`, max 100). ElementorDataStore::save robust (unchanged = success, delete+add fallback, UI log on failure). CacheRegenerator deletes `_elementor_css` then clear_cache. LlmClient logs request/response/errors to UI log. Admin page capability `edit_posts`; log/settings permissions as above. Version 1.2.0 (constant); plugin header may differ.

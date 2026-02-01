@@ -77,3 +77,66 @@
 	color: #646970;
 	margin-top: 0.5em;
 }
+
+.ai-elementor-sync-admin .ai-elementor-sync-inline-result {
+	margin-left: 0.5em;
+	font-size: 13px;
+	color: #00a32a;
+}
+
+.ai-elementor-sync-admin .ai-elementor-sync-inline-result.error {
+	color: #d63638;
+}
+
+.ai-elementor-sync-admin .ai-elementor-sync-form .description {
+	display: block;
+	font-size: 12px;
+	color: #646970;
+	margin-top: 0.25em;
+	margin-bottom: 0.5em;
+}
+
+.ai-elementor-sync-admin .ai-elementor-sync-log-entries {
+	max-height: 400px;
+	overflow-y: auto;
+	border: 1px solid #c3c4c7;
+	background: #f6f7f7;
+	padding: 0.5em;
+	font-size: 12px;
+	font-family: Consolas, Monaco, monospace;
+}
+
+.ai-elementor-sync-admin .ai-elementor-sync-log-entry {
+	padding: 0.35em 0.5em;
+	margin-bottom: 0.25em;
+	border-left: 3px solid #ccc;
+	background: #fff;
+	word-break: break-word;
+}
+
+.ai-elementor-sync-admin .ai-elementor-sync-log-entry.log-request {
+	border-left-color: #2271b1;
+}
+
+.ai-elementor-sync-admin .ai-elementor-sync-log-entry.log-response {
+	border-left-color: #00a32a;
+}
+
+.ai-elementor-sync-admin .ai-elementor-sync-log-entry.log-info {
+	border-left-color: #646970;
+}
+
+.ai-elementor-sync-admin .ai-elementor-sync-log-entry.log-error {
+	border-left-color: #d63638;
+	background: #fcf0f1;
+}
+
+.ai-elementor-sync-admin .ai-elementor-sync-log-entry .log-time {
+	color: #646970;
+	margin-right: 0.5em;
+}
+
+.ai-elementor-sync-admin .ai-elementor-sync-log-entry .log-context {
+	margin-top: 0.25em;
+	white-space: pre-wrap;
+}

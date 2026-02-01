@@ -40,8 +40,8 @@
 		return '<pre>' + ( typeof data === 'string' ? data : JSON.stringify( data, null, 2 ) ) + '</pre>';
 	}
 
-	// Tab switching
-	function initTabs() {
+	// Tab switching (optional onShow callback for tab name)
+	function initTabs( onTabShow ) {
 		const tabs = document.querySelectorAll( '.ai-elementor-sync-tabs .nav-tab' );
 		const panels = document.querySelectorAll( '.ai-elementor-sync-panel' );
 		tabs.forEach( function ( tab ) {
@@ -58,8 +58,112 @@
 				} );
 				this.classList.add( 'nav-tab-active' );
 				this.setAttribute( 'aria-selected', 'true' );
+				if ( onTabShow && typeof onTabShow === 'function' ) onTabShow( tabName );
 			} );
 		} );
+	}
+
+	function loadSettings() {
+		fetch( restUrl + '/settings', {
+			method: 'GET',
+			headers: getHeaders( false ),
+			credentials: 'same-origin',
+		} )
+			.then( function ( res ) { return res.json(); } )
+			.then( function ( data ) {
+				const ai = document.getElementById( 'settings-ai-service-url' );
+				const llm = document.getElementById( 'settings-llm-register-url' );
+				if ( ai && data.ai_service_url !== undefined ) ai.value = data.ai_service_url || '';
+				if ( llm && data.llm_register_url !== undefined ) llm.value = data.llm_register_url || '';
+			} )
+			.catch( function () {} );
+	}
+
+	function loadLog() {
+		const container = document.getElementById( 'log-entries' );
+		if ( ! container ) return;
+		container.textContent = 'Loading…';
+		fetch( restUrl + '/log', {
+			method: 'GET',
+			headers: getHeaders( false ),
+			credentials: 'same-origin',
+		} )
+			.then( function ( res ) { return res.json(); } )
+			.then( function ( data ) {
+				const entries = data.entries || [];
+				if ( entries.length === 0 ) {
+					container.innerHTML = '<p>No log entries yet.</p>';
+					return;
+				}
+				// Newest last in API; show newest first
+				const reversed = entries.slice().reverse();
+				container.innerHTML = reversed.map( function ( entry ) {
+					const ctx = entry.context && Object.keys( entry.context ).length ? '\n' + JSON.stringify( entry.context, null, 2 ) : '';
+					const levelClass = 'log-' + ( entry.level || 'info' );
+					return '<div class="ai-elementor-sync-log-entry ' + levelClass + '">' +
+						'<span class="log-time">' + escapeHtml( entry.time || '' ) + '</span>' +
+						'<span class="log-level">[' + escapeHtml( entry.level || 'info' ) + ']</span> ' +
+						escapeHtml( entry.message || '' ) +
+						( ctx ? '<div class="log-context">' + escapeHtml( ctx ) + '</div>' : '' ) +
+						'</div>';
+				} ).join( '' );
+			} )
+			.catch( function ( err ) {
+				container.innerHTML = '<p class="error">Failed to load log: ' + escapeHtml( err.message || String( err ) ) + '</p>';
+			} );
+	}
+
+	function initSettings() {
+		const form = document.getElementById( 'form-settings' );
+		if ( ! form ) return;
+		form.addEventListener( 'submit', function ( e ) {
+			e.preventDefault();
+			const aiUrl = ( document.getElementById( 'settings-ai-service-url' ) || {} ).value?.trim();
+			const llmUrl = ( document.getElementById( 'settings-llm-register-url' ) || {} ).value?.trim();
+			const resultEl = document.getElementById( 'settings-save-result' );
+			if ( resultEl ) resultEl.textContent = 'Saving…';
+			fetch( restUrl + '/settings', {
+				method: 'POST',
+				headers: getHeaders( true ),
+				credentials: 'same-origin',
+				body: JSON.stringify( { ai_service_url: aiUrl, llm_register_url: llmUrl } ),
+			} )
+				.then( function ( res ) {
+					return res.json().then( function ( data ) {
+						return { ok: res.ok, data };
+					} );
+				} )
+				.then( function ( result ) {
+					if ( resultEl ) {
+						resultEl.textContent = result.ok ? 'Saved.' : 'Save failed.';
+						resultEl.classList.toggle( 'error', ! result.ok );
+					}
+				} )
+				.catch( function () {
+					if ( resultEl ) {
+						resultEl.textContent = 'Save failed.';
+						resultEl.classList.add( 'error' );
+					}
+				} );
+		} );
+	}
+
+	function initLog() {
+		const refreshBtn = document.getElementById( 'btn-refresh-log' );
+		const clearBtn = document.getElementById( 'btn-clear-log' );
+		if ( refreshBtn ) refreshBtn.addEventListener( 'click', loadLog );
+		if ( clearBtn ) {
+			clearBtn.addEventListener( 'click', function () {
+				fetch( restUrl + '/clear-log', {
+					method: 'POST',
+					headers: getHeaders( true ),
+					credentials: 'same-origin',
+					body: JSON.stringify( {} ),
+				} )
+					.then( function () { loadLog(); } )
+					.catch( function () { loadLog(); } );
+			} );
+		}
 	}
 
 	// Inspect: GET ?url=...
@@ -313,13 +417,18 @@
 	}
 
 	function init() {
-		initTabs();
+		initTabs( function ( tabName ) {
+			if ( tabName === 'settings' ) loadSettings();
+			if ( tabName === 'log' ) loadLog();
+		} );
 		initInspect();
 		initReplaceText();
 		initLlmEdit();
 		initApplyEdits();
 		initAppPassword();
 		initRegisterLlm();
+		initSettings();
+		initLog();
 		// Pre-fill LLM register URL from option if set
 		const llmRegisterInput = document.getElementById( 'llm-register-url' );
 		if ( llmRegisterInput && config.llm_register_url ) {

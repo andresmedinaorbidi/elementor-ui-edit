@@ -112,6 +112,8 @@ final class AdminPage {
 				<button type="button" class="nav-tab" role="tab" data-tab="llm-edit"><?php esc_html_e( 'LLM edit', 'ai-elementor-sync' ); ?></button>
 				<button type="button" class="nav-tab" role="tab" data-tab="apply-edits"><?php esc_html_e( 'Apply edits', 'ai-elementor-sync' ); ?></button>
 				<button type="button" class="nav-tab" role="tab" data-tab="app-password"><?php esc_html_e( 'Application password', 'ai-elementor-sync' ); ?></button>
+				<button type="button" class="nav-tab" role="tab" data-tab="settings"><?php esc_html_e( 'Settings', 'ai-elementor-sync' ); ?></button>
+				<button type="button" class="nav-tab" role="tab" data-tab="log"><?php esc_html_e( 'Log', 'ai-elementor-sync' ); ?></button>
 			</nav>
 
 			<div id="tab-inspect" class="ai-elementor-sync-panel" role="tabpanel">
@@ -210,6 +212,37 @@ final class AdminPage {
 						<div id="result-register-llm" class="ai-elementor-sync-result" aria-live="polite"></div>
 					</div>
 				</div>
+			</div>
+
+			<div id="tab-settings" class="ai-elementor-sync-panel hidden" role="tabpanel">
+				<h2><?php esc_html_e( 'Settings', 'ai-elementor-sync' ); ?></h2>
+				<p><?php esc_html_e( 'Configure the AI service URL and optional LLM app register URL. Changes apply immediately.', 'ai-elementor-sync' ); ?></p>
+				<form id="form-settings" class="ai-elementor-sync-form">
+					<p>
+						<label for="settings-ai-service-url"><?php esc_html_e( 'AI service URL', 'ai-elementor-sync' ); ?></label>
+						<input type="url" id="settings-ai-service-url" name="ai_service_url" class="large-text" placeholder="https://elementor-ui-edit-server.onrender.com/edits" />
+						<span class="description"><?php esc_html_e( 'External LLM edit service endpoint (e.g. /edits).', 'ai-elementor-sync' ); ?></span>
+					</p>
+					<p>
+						<label for="settings-llm-register-url"><?php esc_html_e( 'LLM app register URL', 'ai-elementor-sync' ); ?></label>
+						<input type="url" id="settings-llm-register-url" name="llm_register_url" class="large-text" placeholder="https://your-llm-app.com/register-site" />
+						<span class="description"><?php esc_html_e( 'Optional: used to pre-fill the Register field in Application password tab.', 'ai-elementor-sync' ); ?></span>
+					</p>
+					<p>
+						<button type="submit" class="button button-primary"><?php esc_html_e( 'Save settings', 'ai-elementor-sync' ); ?></button>
+						<span id="settings-save-result" class="ai-elementor-sync-inline-result" aria-live="polite"></span>
+					</p>
+				</form>
+			</div>
+
+			<div id="tab-log" class="ai-elementor-sync-panel hidden" role="tabpanel">
+				<h2><?php esc_html_e( 'Log', 'ai-elementor-sync' ); ?></h2>
+				<p><?php esc_html_e( 'Recent requests and errors (LLM calls, save failures). Last 100 entries. Refresh to load.', 'ai-elementor-sync' ); ?></p>
+				<p>
+					<button type="button" id="btn-refresh-log" class="button"><?php esc_html_e( 'Refresh', 'ai-elementor-sync' ); ?></button>
+					<button type="button" id="btn-clear-log" class="button"><?php esc_html_e( 'Clear log', 'ai-elementor-sync' ); ?></button>
+				</p>
+				<div id="log-entries" class="ai-elementor-sync-log-entries" aria-live="polite"></div>
 			</div>
 		</div>
 		<?php

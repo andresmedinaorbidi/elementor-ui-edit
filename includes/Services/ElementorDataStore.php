@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace AiElementorSync\Services;
 
+use AiElementorSync\Support\Logger;
+
 /**
  * Read/write Elementor page data from post meta _elementor_data.
  */
@@ -39,6 +41,8 @@ final class ElementorDataStore {
 
 	/**
 	 * Save Elementor data to post meta.
+	 * WordPress update_post_meta returns false when the new value equals the existing value (no change).
+	 * We treat that as success. If update fails and value changed, try delete + add to force write.
 	 *
 	 * @param int   $post_id Post ID.
 	 * @param array $data    Element tree array.
@@ -47,9 +51,34 @@ final class ElementorDataStore {
 	public static function save( int $post_id, array $data ): bool {
 		$json = wp_json_encode( $data );
 		if ( $json === false ) {
+			Logger::log_ui( 'error', 'ElementorDataStore::save failed: wp_json_encode returned false.', [ 'post_id' => $post_id ] );
 			return false;
 		}
-		// wp_slash compensates for WordPress stripping slashes when reading; matches Elementor save.
-		return update_post_meta( $post_id, '_elementor_data', wp_slash( $json ) ) !== false;
+		$to_save = wp_slash( $json );
+		$result  = update_post_meta( $post_id, '_elementor_data', $to_save );
+
+		if ( $result !== false ) {
+			return true;
+		}
+
+		// update_post_meta returns false when value is unchanged; treat as success.
+		$current = get_post_meta( $post_id, '_elementor_data', true );
+		$current_str = is_string( $current ) ? $current : wp_json_encode( $current );
+		if ( $current_str === $to_save ) {
+			return true;
+		}
+
+		// Force write: delete then add (works around update_post_meta quirks on some hosts).
+		delete_post_meta( $post_id, '_elementor_data' );
+		$added = add_post_meta( $post_id, '_elementor_data', $to_save, true );
+		if ( $added ) {
+			return true;
+		}
+
+		Logger::log_ui( 'error', 'ElementorDataStore::save failed: update and delete+add both failed.', [
+			'post_id'     => $post_id,
+			'json_length' => strlen( $json ),
+		] );
+		return false;
 	}
 }

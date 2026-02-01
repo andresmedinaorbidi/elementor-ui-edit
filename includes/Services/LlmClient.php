@@ -13,6 +13,7 @@ use AiElementorSync\Support\Logger;
 final class LlmClient {
 
 	private const OPTION_URL = 'ai_elementor_sync_ai_service_url';
+	private const DEFAULT_SERVICE_URL = 'https://elementor-ui-edit-server.onrender.com/edits';
 	private const DEFAULT_TIMEOUT = 30;
 
 	/**
@@ -26,6 +27,7 @@ final class LlmClient {
 		$url = self::get_service_url();
 		if ( $url === '' ) {
 			Logger::log( 'AI edit service not configured: missing service URL.' );
+			Logger::log_ui( 'error', 'AI edit service not configured: missing service URL.', [] );
 			return [ 'edits' => [], 'error' => 'AI edit service not configured.' ];
 		}
 
@@ -33,6 +35,12 @@ final class LlmClient {
 			'dictionary'  => $dictionary,
 			'instruction' => $instruction,
 		];
+
+		Logger::log_ui( 'request', 'LLM request', [
+			'url'            => $url,
+			'dict_count'     => count( $dictionary ),
+			'instruction_len' => strlen( $instruction ),
+		] );
 
 		$response = wp_remote_post(
 			$url,
@@ -46,13 +54,18 @@ final class LlmClient {
 		);
 
 		if ( is_wp_error( $response ) ) {
-			Logger::log( 'AI edit service request failed', [ 'error' => $response->get_error_message() ] );
+			$err_msg = $response->get_error_message();
+			Logger::log( 'AI edit service request failed', [ 'error' => $err_msg ] );
+			Logger::log_ui( 'error', 'LLM request failed', [ 'error' => $err_msg ] );
 			return [ 'edits' => [], 'error' => 'AI edit service request failed.' ];
 		}
 
 		$code = wp_remote_retrieve_response_code( $response );
 		if ( $code < 200 || $code >= 300 ) {
 			Logger::log( 'AI edit service returned non-2xx', [ 'code' => $code ] );
+			$raw_body = wp_remote_retrieve_body( $response );
+			$snippet = strlen( $raw_body ) > 200 ? substr( $raw_body, 0, 200 ) . '...' : $raw_body;
+			Logger::log_ui( 'error', 'LLM response non-2xx', [ 'code' => $code, 'body_snippet' => $snippet ] );
 			return [ 'edits' => [], 'error' => 'AI edit service response invalid.' ];
 		}
 
@@ -60,11 +73,13 @@ final class LlmClient {
 		$decoded  = json_decode( $raw_body, true );
 		if ( ! is_array( $decoded ) ) {
 			Logger::log( 'AI edit service response body is not valid JSON.' );
+			Logger::log_ui( 'error', 'LLM response invalid JSON', [ 'body_snippet' => strlen( $raw_body ) > 200 ? substr( $raw_body, 0, 200 ) . '...' : $raw_body ] );
 			return [ 'edits' => [], 'error' => 'AI edit service response invalid.' ];
 		}
 
 		if ( isset( $decoded['error'] ) && is_string( $decoded['error'] ) && $decoded['error'] !== '' ) {
 			Logger::log( 'AI edit service returned error', [ 'message' => $decoded['error'] ] );
+			Logger::log_ui( 'error', 'LLM service returned error', [ 'message' => $decoded['error'] ] );
 			return [ 'edits' => [], 'error' => $decoded['error'] ];
 		}
 
@@ -72,9 +87,12 @@ final class LlmClient {
 		if ( ! is_array( $edits ) ) {
 			$edits = [];
 		}
+		$edits = self::normalize_edits( $edits );
+
+		Logger::log_ui( 'response', 'LLM response OK', [ 'edits_count' => count( $edits ) ] );
 
 		return [
-			'edits' => self::normalize_edits( $edits ),
+			'edits' => $edits,
 			'error' => null,
 		];
 	}
@@ -116,8 +134,8 @@ final class LlmClient {
 		if ( defined( 'AI_ELEMENTOR_SYNC_AI_SERVICE_URL' ) && is_string( AI_ELEMENTOR_SYNC_AI_SERVICE_URL ) ) {
 			return trim( AI_ELEMENTOR_SYNC_AI_SERVICE_URL );
 		}
-		$url = get_option( self::OPTION_URL, '' );
-		$url = is_string( $url ) ? $url : '';
+		$url = get_option( self::OPTION_URL, self::DEFAULT_SERVICE_URL );
+		$url = is_string( $url ) ? $url : self::DEFAULT_SERVICE_URL;
 		if ( function_exists( 'apply_filters' ) ) {
 			$url = (string) apply_filters( 'ai_elementor_sync_ai_service_url', $url );
 		}

@@ -7,6 +7,7 @@ namespace AiElementorSync\Rest;
 use AiElementorSync\Rest\Controllers\ApplicationPasswordController;
 use AiElementorSync\Rest\Controllers\LlmEditController;
 use AiElementorSync\Rest\Controllers\ReplaceTextController;
+use AiElementorSync\Rest\Controllers\SettingsController;
 use AiElementorSync\Services\UrlResolver;
 use WP_REST_Request;
 use WP_REST_Server;
@@ -120,6 +121,34 @@ final class Routes {
 			'methods'             => WP_REST_Server::CREATABLE,
 			'callback'            => [ ApplicationPasswordController::class, 'create_application_password' ],
 			'permission_callback' => [ self::class, 'permission_create_application_password' ],
+			'args'                => [],
+		] );
+
+		register_rest_route( self::NAMESPACE, 'settings', [
+			'methods'             => WP_REST_Server::READABLE,
+			'callback'            => [ SettingsController::class, 'get_settings' ],
+			'permission_callback' => [ self::class, 'permission_manage_settings' ],
+			'args'                => [],
+		] );
+		register_rest_route( self::NAMESPACE, 'settings', [
+			'methods'             => WP_REST_Server::CREATABLE,
+			'callback'            => [ SettingsController::class, 'update_settings' ],
+			'permission_callback' => [ self::class, 'permission_manage_settings' ],
+			'args'                => [
+				'ai_service_url'   => [ 'required' => false, 'type' => 'string' ],
+				'llm_register_url' => [ 'required' => false, 'type' => 'string' ],
+			],
+		] );
+		register_rest_route( self::NAMESPACE, 'log', [
+			'methods'             => WP_REST_Server::READABLE,
+			'callback'            => [ SettingsController::class, 'get_log' ],
+			'permission_callback' => [ self::class, 'permission_log' ],
+			'args'                => [],
+		] );
+		register_rest_route( self::NAMESPACE, 'clear-log', [
+			'methods'             => WP_REST_Server::CREATABLE,
+			'callback'            => [ SettingsController::class, 'clear_log' ],
+			'permission_callback' => [ self::class, 'permission_log' ],
 			'args'                => [],
 		] );
 	}
@@ -260,6 +289,38 @@ final class Routes {
 		}
 		if ( ! current_user_can( 'manage_options' ) ) {
 			return new \WP_Error( 'rest_forbidden', __( 'You do not have permission to create application passwords.', 'ai-elementor-sync' ), [ 'status' => 403 ] );
+		}
+		return true;
+	}
+
+	/**
+	 * Permission callback for settings: require manage_options.
+	 *
+	 * @param WP_REST_Request $request Request.
+	 * @return true|\WP_Error
+	 */
+	public static function permission_manage_settings( WP_REST_Request $request ) {
+		if ( ! is_user_logged_in() ) {
+			return new \WP_Error( 'rest_not_logged_in', __( 'Authentication required.', 'ai-elementor-sync' ), [ 'status' => 401 ] );
+		}
+		if ( ! current_user_can( 'manage_options' ) ) {
+			return new \WP_Error( 'rest_forbidden', __( 'You do not have permission to manage settings.', 'ai-elementor-sync' ), [ 'status' => 403 ] );
+		}
+		return true;
+	}
+
+	/**
+	 * Permission callback for log (view/clear): require edit_posts so editors can see logs.
+	 *
+	 * @param WP_REST_Request $request Request.
+	 * @return true|\WP_Error
+	 */
+	public static function permission_log( WP_REST_Request $request ) {
+		if ( ! is_user_logged_in() ) {
+			return new \WP_Error( 'rest_not_logged_in', __( 'Authentication required.', 'ai-elementor-sync' ), [ 'status' => 401 ] );
+		}
+		if ( ! current_user_can( 'edit_posts' ) ) {
+			return new \WP_Error( 'rest_forbidden', __( 'You do not have permission to view the log.', 'ai-elementor-sync' ), [ 'status' => 403 ] );
 		}
 		return true;
 	}

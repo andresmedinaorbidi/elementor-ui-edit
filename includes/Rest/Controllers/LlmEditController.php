@@ -178,6 +178,7 @@ final class LlmEditController {
 		if ( $applied_count > 0 ) {
 			$saved = ElementorDataStore::save( $post_id, $data );
 			if ( ! $saved ) {
+				Logger::log_ui( 'error', 'Failed to save Elementor data (apply-edits).', [ 'post_id' => $post_id, 'applied_count' => $applied_count ] );
 				return Errors::error_response( 'Failed to save Elementor data.', $post_id, 500 );
 			}
 			CacheRegenerator::regenerate( $post_id );
