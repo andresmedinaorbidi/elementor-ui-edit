@@ -118,7 +118,7 @@ final class AdminPage {
 
 			<div id="tab-inspect" class="ai-elementor-sync-panel" role="tabpanel">
 				<h2><?php esc_html_e( 'Inspect', 'ai-elementor-sync' ); ?></h2>
-				<p><?php esc_html_e( 'Get post ID, structure, and text/link fields for a page URL. Supports heading, text-editor, button, image-box, icon-box, accordion, tabs, and more.', 'ai-elementor-sync' ); ?></p>
+				<p><?php esc_html_e( 'Get post ID, structure, text/link fields, and image slots (Image widget + container/section background image) for a page URL. Supports heading, text-editor, button, image-box, icon-box, accordion, tabs, and more.', 'ai-elementor-sync' ); ?></p>
 				<form id="form-inspect" class="ai-elementor-sync-form">
 					<p>
 						<label for="inspect-url"><?php esc_html_e( 'Page URL', 'ai-elementor-sync' ); ?></label>
@@ -175,7 +175,7 @@ final class AdminPage {
 
 			<div id="tab-apply-edits" class="ai-elementor-sync-panel hidden" role="tabpanel">
 				<h2><?php esc_html_e( 'Apply edits', 'ai-elementor-sync' ); ?></h2>
-				<p><?php esc_html_e( 'Apply edits directly (no AI). Each edit: id or path; new_text or new_url/new_link; optional field and item_index for specific slots.', 'ai-elementor-sync' ); ?></p>
+				<p><?php esc_html_e( 'Apply edits directly (no AI). Each edit: id or path; new_text or new_url/new_link (text/URL); or new_image_url/new_attachment_id (image/background). Optional field and item_index for text/URL slots.', 'ai-elementor-sync' ); ?></p>
 				<form id="form-apply-edits" class="ai-elementor-sync-form">
 					<p>
 						<label for="apply-url"><?php esc_html_e( 'Page URL', 'ai-elementor-sync' ); ?></label>
@@ -183,7 +183,7 @@ final class AdminPage {
 					</p>
 					<p>
 						<label for="apply-edits"><?php esc_html_e( 'Edits (JSON array)', 'ai-elementor-sync' ); ?></label>
-						<textarea id="apply-edits" name="edits" class="large-text code" rows="8" placeholder='[{"id":"abc123","new_text":"Hello"},{"path":"0/1/2","field":"description_text","new_text":"World"},{"id":"xyz","new_url":"https://example.com"}]' required></textarea>
+						<textarea id="apply-edits" name="edits" class="large-text code" rows="8" placeholder='[{"id":"abc123","new_text":"Hello"},{"path":"0/1/2","new_image_url":"https://example.com/image.jpg"},{"id":"img1","new_attachment_id":42}]' required></textarea>
 					</p>
 					<p>
 						<button type="submit" class="button button-primary"><?php esc_html_e( 'Apply edits', 'ai-elementor-sync' ); ?></button>
@@ -227,6 +227,13 @@ final class AdminPage {
 						<label for="settings-llm-register-url"><?php esc_html_e( 'LLM app register URL', 'ai-elementor-sync' ); ?></label>
 						<input type="url" id="settings-llm-register-url" name="llm_register_url" class="large-text" placeholder="https://your-llm-app.com/register-site" />
 						<span class="description"><?php esc_html_e( 'Optional: used to pre-fill the Register field in Application password tab.', 'ai-elementor-sync' ); ?></span>
+					</p>
+					<p>
+						<label for="settings-sideload-images">
+							<input type="checkbox" id="settings-sideload-images" name="sideload_images" value="1" />
+							<?php esc_html_e( 'Sideload images from URL', 'ai-elementor-sync' ); ?>
+						</label>
+						<span class="description"><?php esc_html_e( 'When applying image edits with only a URL (no attachment ID), download the image into the media library and set the attachment ID.', 'ai-elementor-sync' ); ?></span>
 					</p>
 					<p>
 						<button type="submit" class="button button-primary"><?php esc_html_e( 'Save settings', 'ai-elementor-sync' ); ?></button>

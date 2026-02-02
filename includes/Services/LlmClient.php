@@ -17,13 +17,14 @@ final class LlmClient {
 	private const DEFAULT_TIMEOUT = 30;
 
 	/**
-	 * Request edits from the external service: send dictionary + instruction, expect { edits, error? }.
+	 * Request edits from the external service: send dictionary + instruction + image_slots, expect { edits, error? }.
 	 *
-	 * @param array  $dictionary Page dictionary (array of { id?, path, widget_type, text }).
-	 * @param string $instruction User instruction (natural language).
-	 * @return array{ edits: array<int, array{ id?: string, path?: string, new_text: string }>, error: string|null }
+	 * @param array       $dictionary  Page dictionary (array of { id?, path, widget_type, text, link_url? }).
+	 * @param string      $instruction User instruction (natural language).
+	 * @param array|null  $image_slots Optional image slots (id, path, slot_type, image_url, image_id?); when provided, AI may return image edits.
+	 * @return array{ edits: array<int, array{ id?: string, path?: string, new_text?: string, new_url?: string, new_link?: array, new_image_url?: string, new_attachment_id?: int, type?: string }>, error: string|null }
 	 */
-	public static function requestEdits( array $dictionary, string $instruction ): array {
+	public static function requestEdits( array $dictionary, string $instruction, array $image_slots = [] ): array {
 		$url = self::get_service_url();
 		if ( $url === '' ) {
 			Logger::log( 'AI edit service not configured: missing service URL.' );
@@ -32,9 +33,13 @@ final class LlmClient {
 		}
 
 		$body = [
-			'dictionary'  => $dictionary,
-			'instruction' => $instruction,
+			'dictionary'       => $dictionary,
+			'instruction'      => $instruction,
+			'edit_capabilities'=> [ 'text', 'url', 'image' ],
 		];
+		if ( ! empty( $image_slots ) ) {
+			$body['image_slots'] = $image_slots;
+		}
 
 		Logger::log_ui( 'request', 'LLM request', [
 			'url'            => $url,
@@ -129,11 +134,11 @@ final class LlmClient {
 	}
 
 	/**
-	 * Normalize and validate edits: each item must have at least one of id or path, and at least one of new_text or new_url/new_link.
-	 * Passes through field, item_index, new_url, new_link for extended apply-edits contract.
+	 * Normalize and validate edits: each item must have at least one of id or path, and at least one of new_text, new_url/new_link, or new_image_url/new_attachment_id/new_image.
+	 * Passes through field, item_index; sets type (text, url, image) so apply_edits_to_data branches correctly.
 	 *
 	 * @param array $edits Raw parsed array.
-	 * @return array<int, array{ id?: string, path?: string, field?: string, item_index?: int, new_text?: string, new_url?: string, new_link?: array }>
+	 * @return array<int, array{ id?: string, path?: string, field?: string, item_index?: int, type?: string, new_text?: string, new_url?: string, new_link?: array, new_image_url?: string, new_attachment_id?: int|null }>
 	 */
 	private static function normalize_edits( array $edits ): array {
 		$out = [];
@@ -149,9 +154,18 @@ final class LlmClient {
 			$new_text = array_key_exists( 'new_text', $item ) ? $item['new_text'] : null;
 			$new_url = array_key_exists( 'new_url', $item ) ? $item['new_url'] : null;
 			$new_link = array_key_exists( 'new_link', $item ) && is_array( $item['new_link'] ) ? $item['new_link'] : null;
+			$new_image = array_key_exists( 'new_image', $item ) && is_array( $item['new_image'] ) ? $item['new_image'] : null;
+			$new_image_url = array_key_exists( 'new_image_url', $item ) ? $item['new_image_url'] : null;
+			$new_attachment_id_raw = array_key_exists( 'new_attachment_id', $item ) ? $item['new_attachment_id'] : null;
+			if ( $new_image !== null ) {
+				$new_image_url = $new_image_url ?? ( isset( $new_image['url'] ) && is_string( $new_image['url'] ) ? $new_image['url'] : null );
+				$new_attachment_id_raw = $new_attachment_id_raw ?? ( array_key_exists( 'id', $new_image ) ? $new_image['id'] : null );
+			}
+			$new_attachment_id = self::normalize_attachment_id( $new_attachment_id_raw );
 			$has_text = $new_text !== null;
 			$has_url = ( $new_url !== null && ( is_string( $new_url ) || is_numeric( $new_url ) ) ) || ( $new_link !== null && isset( $new_link['url'] ) );
-			if ( ! $has_text && ! $has_url ) {
+			$has_image = ( $new_image_url !== null ) || ( $new_attachment_id_raw !== null );
+			if ( ! $has_text && ! $has_url && ! $has_image ) {
 				continue;
 			}
 			$entry = [];
@@ -167,18 +181,46 @@ final class LlmClient {
 			if ( isset( $item['item_index'] ) && is_numeric( $item['item_index'] ) ) {
 				$entry['item_index'] = (int) $item['item_index'];
 			}
-			if ( $has_text ) {
+			// One type per edit: image takes precedence, then url, then text.
+			if ( $has_image ) {
+				$entry['type'] = 'image';
+				$entry['new_image_url'] = $new_image_url !== null ? (string) $new_image_url : '';
+				$entry['new_attachment_id'] = $new_attachment_id;
+			} elseif ( $has_url ) {
+				$entry['type'] = 'url';
+				if ( $new_url !== null && ( is_string( $new_url ) || is_numeric( $new_url ) ) ) {
+					$entry['new_url'] = (string) $new_url;
+				}
+				if ( $new_link !== null && isset( $new_link['url'] ) ) {
+					$entry['new_link'] = $new_link;
+				}
+			} else {
+				$entry['type'] = 'text';
 				$entry['new_text'] = is_string( $new_text ) ? $new_text : (string) $new_text;
-			}
-			if ( $new_url !== null && ( is_string( $new_url ) || is_numeric( $new_url ) ) ) {
-				$entry['new_url'] = (string) $new_url;
-			}
-			if ( $new_link !== null && isset( $new_link['url'] ) ) {
-				$entry['new_link'] = $new_link;
 			}
 			$out[] = $entry;
 		}
 		return $out;
+	}
+
+	/**
+	 * Normalize attachment ID: integer or numeric string; empty/invalid = null.
+	 *
+	 * @param mixed $raw Raw value from AI response.
+	 * @return int|null Positive int or null.
+	 */
+	private static function normalize_attachment_id( $raw ): ?int {
+		if ( $raw === null || $raw === '' ) {
+			return null;
+		}
+		if ( is_int( $raw ) ) {
+			return $raw > 0 ? $raw : null;
+		}
+		if ( is_string( $raw ) && is_numeric( $raw ) ) {
+			$n = (int) $raw;
+			return $n > 0 ? $n : null;
+		}
+		return null;
 	}
 
 	private static function get_service_url(): string {

@@ -7,6 +7,7 @@ namespace AiElementorSync\Rest\Controllers;
 use AiElementorSync\Services\CacheRegenerator;
 use AiElementorSync\Services\ElementorDataStore;
 use AiElementorSync\Services\ElementorTraverser;
+use AiElementorSync\Services\ImageSideload;
 use AiElementorSync\Services\LlmClient;
 use AiElementorSync\Services\UrlResolver;
 use AiElementorSync\Support\Errors;
@@ -58,8 +59,9 @@ final class LlmEditController {
 		}
 
 		$dictionary = ElementorTraverser::buildPageDictionary( $data, $widget_types );
+		$image_slots = ElementorTraverser::buildImageSlots( $data );
 
-		$result = LlmClient::requestEdits( $dictionary, $instruction );
+		$result = LlmClient::requestEdits( $dictionary, $instruction, $image_slots );
 		$edits = $result['edits'];
 		$raw_edits_count = $result['raw_edits_count'] ?? 0;
 		$error = $result['error'] ?? null;
@@ -131,17 +133,18 @@ final class LlmEditController {
 
 		$normalized = self::normalize_edit_items( $edits );
 		if ( empty( $normalized ) ) {
-			return Errors::error_response( 'No valid edits: each item must have id or path, and new_text or new_url/new_link.', $post_id, 400 );
+			return Errors::error_response( 'No valid edits: each item must have id or path, and new_text, new_url/new_link, or new_image_url/new_attachment_id.', $post_id, 400 );
 		}
 
 		return self::apply_edits_to_data( $data, $post_id, $normalized, $widget_types );
 	}
 
 	/**
-	 * Normalize edit items: at least one of id/path; at least one of new_text or new_url/new_link. Pass through field, item_index.
+	 * Normalize edit items: at least one of id/path; at least one of new_text, new_url/new_link, or new_image_url/new_attachment_id/new_image. Pass through field, item_index.
+	 * Image edits: new_image_url (string), new_attachment_id (int), or new_image: { url?, id? }.
 	 *
 	 * @param array $edits Raw edits array from request.
-	 * @return array<int, array{ id?: string, path?: string, field?: string, item_index?: int, new_text?: string, new_url?: string, new_link?: array }>
+	 * @return array<int, array{ id?: string, path?: string, field?: string, item_index?: int, new_text?: string, new_url?: string, new_link?: array, new_image_url?: string, new_attachment_id?: int|null, type?: string }>
 	 */
 	private static function normalize_edit_items( array $edits ): array {
 		$out = [];
@@ -157,9 +160,18 @@ final class LlmEditController {
 			$new_text = array_key_exists( 'new_text', $item ) ? $item['new_text'] : null;
 			$new_url = array_key_exists( 'new_url', $item ) ? $item['new_url'] : null;
 			$new_link = array_key_exists( 'new_link', $item ) && is_array( $item['new_link'] ) ? $item['new_link'] : null;
+			$new_image = array_key_exists( 'new_image', $item ) && is_array( $item['new_image'] ) ? $item['new_image'] : null;
+			$new_image_url = array_key_exists( 'new_image_url', $item ) ? $item['new_image_url'] : null;
+			$new_attachment_id_raw = array_key_exists( 'new_attachment_id', $item ) ? $item['new_attachment_id'] : null;
+			if ( $new_image !== null ) {
+				$new_image_url = $new_image_url ?? ( isset( $new_image['url'] ) && is_string( $new_image['url'] ) ? $new_image['url'] : null );
+				$new_attachment_id_raw = $new_attachment_id_raw ?? ( array_key_exists( 'id', $new_image ) ? $new_image['id'] : null );
+			}
+			$new_attachment_id = self::normalize_attachment_id( $new_attachment_id_raw );
 			$has_text = $new_text !== null;
 			$has_url = ( $new_url !== null && ( is_string( $new_url ) || is_numeric( $new_url ) ) ) || ( $new_link !== null && isset( $new_link['url'] ) );
-			if ( ! $has_text && ! $has_url ) {
+			$has_image = ( $new_image_url !== null ) || ( $new_attachment_id_raw !== null );
+			if ( ! $has_text && ! $has_url && ! $has_image ) {
 				continue;
 			}
 			$entry = [];
@@ -175,18 +187,46 @@ final class LlmEditController {
 			if ( isset( $item['item_index'] ) && is_numeric( $item['item_index'] ) ) {
 				$entry['item_index'] = (int) $item['item_index'];
 			}
-			if ( $has_text ) {
+			// One type per edit: image takes precedence, then url, then text.
+			if ( $has_image ) {
+				$entry['type'] = 'image';
+				$entry['new_image_url'] = $new_image_url !== null ? (string) $new_image_url : '';
+				$entry['new_attachment_id'] = $new_attachment_id;
+			} elseif ( $has_url ) {
+				$entry['type'] = 'url';
+				if ( $new_url !== null && ( is_string( $new_url ) || is_numeric( $new_url ) ) ) {
+					$entry['new_url'] = (string) $new_url;
+				}
+				if ( $new_link !== null && isset( $new_link['url'] ) ) {
+					$entry['new_link'] = $new_link;
+				}
+			} else {
+				$entry['type'] = 'text';
 				$entry['new_text'] = is_string( $new_text ) ? $new_text : (string) $new_text;
-			}
-			if ( $new_url !== null && ( is_string( $new_url ) || is_numeric( $new_url ) ) ) {
-				$entry['new_url'] = (string) $new_url;
-			}
-			if ( $new_link !== null && isset( $new_link['url'] ) ) {
-				$entry['new_link'] = $new_link;
 			}
 			$out[] = $entry;
 		}
 		return $out;
+	}
+
+	/**
+	 * Normalize attachment ID: integer or numeric string; empty/invalid = null (clear id).
+	 *
+	 * @param mixed $raw Raw value from request.
+	 * @return int|null Positive int or null.
+	 */
+	private static function normalize_attachment_id( $raw ): ?int {
+		if ( $raw === null || $raw === '' ) {
+			return null;
+		}
+		if ( is_int( $raw ) ) {
+			return $raw > 0 ? $raw : null;
+		}
+		if ( is_string( $raw ) && is_numeric( $raw ) ) {
+			$n = (int) $raw;
+			return $n > 0 ? $n : null;
+		}
+		return null;
 	}
 
 	/**
@@ -203,12 +243,78 @@ final class LlmEditController {
 		$applied_count = 0;
 		$failed = [];
 		$applied_edits = []; // Track for verification: id, path, modified_path, field?, item_index?, new_text? or new_url/new_link?, type.
+		$applied_image_edits = [];
 
 		foreach ( $edits as $edit ) {
+			$edit_type = $edit['type'] ?? 'text';
 			$id = $edit['id'] ?? '';
 			$path = $edit['path'] ?? '';
 			$field = isset( $edit['field'] ) && is_string( $edit['field'] ) ? $edit['field'] : null;
 			$item_index = isset( $edit['item_index'] ) ? (int) $edit['item_index'] : null;
+
+			if ( $edit_type === 'image' ) {
+				$new_image_url = isset( $edit['new_image_url'] ) ? (string) $edit['new_image_url'] : '';
+				$new_attachment_id = isset( $edit['new_attachment_id'] ) ? $edit['new_attachment_id'] : null;
+				if ( $new_attachment_id !== null && (int) $new_attachment_id <= 0 ) {
+					$new_attachment_id = null;
+				} elseif ( $new_attachment_id !== null ) {
+					$new_attachment_id = (int) $new_attachment_id;
+				}
+				if ( $new_image_url === '' && $new_attachment_id !== null && $new_attachment_id > 0 ) {
+					$resolved = wp_get_attachment_url( $new_attachment_id );
+					if ( is_string( $resolved ) && $resolved !== '' ) {
+						$new_image_url = $resolved;
+					}
+				}
+				// When only URL is provided and sideload is enabled, download and create attachment.
+				if ( $new_image_url !== '' && ( $new_attachment_id === null || $new_attachment_id <= 0 ) ) {
+					$sideload_enabled = (bool) get_option( 'ai_elementor_sync_sideload_images', false );
+					if ( $sideload_enabled ) {
+						$sideload_result = ImageSideload::sideload( $new_image_url, $post_id );
+						if ( $sideload_result !== null ) {
+							$new_image_url = $sideload_result['url'];
+							$new_attachment_id = $sideload_result['id'];
+						}
+					}
+				}
+				$slot_type = null;
+				if ( $id !== '' ) {
+					$slot_type = ElementorTraverser::getImageSlotTypeById( $data, $id );
+				}
+				if ( $slot_type === null && $path !== '' ) {
+					$slot_type = ElementorTraverser::getImageSlotTypeByPath( $data, $path );
+				}
+				$ok = false;
+				if ( $slot_type !== null ) {
+					if ( $id !== '' ) {
+						$ok = ElementorTraverser::replaceImageById( $data, $id, $new_image_url, $new_attachment_id, $slot_type );
+					}
+					if ( ! $ok && $path !== '' ) {
+						$ok = ElementorTraverser::replaceImageByPath( $data, $path, $new_image_url, $new_attachment_id, $slot_type );
+					}
+				}
+				if ( $ok ) {
+					$applied_count++;
+					$modified_path = $id !== '' ? ElementorTraverser::findPathById( $data, $id ) : $path;
+					$applied_image_edits[] = [
+						'id'               => $id !== '' ? $id : null,
+						'path'             => $path !== '' ? $path : null,
+						'modified_path'    => $modified_path,
+						'slot_type'        => $slot_type,
+						'new_image_url'    => $new_image_url,
+						'new_attachment_id'=> $new_attachment_id,
+					];
+				} else {
+					$failed[] = [
+						'id'     => $id !== '' ? $id : null,
+						'path'   => $path !== '' ? $path : null,
+						'error'  => 'Invalid id/path or not an image/background_image slot.',
+						'reason' => $slot_type === null ? 'id_not_found_or_path_invalid' : 'unknown',
+					];
+				}
+				continue;
+			}
+
 			$new_text = $edit['new_text'] ?? null;
 			$new_url = $edit['new_url'] ?? null;
 			$new_link = $edit['new_link'] ?? null;
@@ -284,6 +390,9 @@ final class LlmEditController {
 		];
 		if ( ! empty( $applied_edits ) ) {
 			$body['applied_edits'] = $applied_edits;
+		}
+		if ( ! empty( $applied_image_edits ) ) {
+			$body['applied_image_edits'] = $applied_image_edits;
 		}
 		if ( $verified_in_memory_before_save !== null ) {
 			$body['verified_in_memory_before_save'] = $verified_in_memory_before_save;

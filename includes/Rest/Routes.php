@@ -113,8 +113,9 @@ final class Routes {
 					},
 				],
 				'edits'         => [
-					'required' => true,
-					'type'     => 'array',
+					'required'    => true,
+					'type'        => 'array',
+					'description' => 'Each item: id or path; new_text or new_url/new_link (text/URL), or new_image_url/new_attachment_id/new_image (image). Image: new_image_url (string), new_attachment_id (int), or new_image: { url?, id? }.',
 				],
 				'widget_types'  => [
 					'required' => false,
@@ -144,6 +145,7 @@ final class Routes {
 			'args'                => [
 				'ai_service_url'   => [ 'required' => false, 'type' => 'string' ],
 				'llm_register_url' => [ 'required' => false, 'type' => 'string' ],
+				'sideload_images'  => [ 'required' => false, 'type' => 'boolean' ],
 			],
 		] );
 		register_rest_route( self::NAMESPACE, 'log', [

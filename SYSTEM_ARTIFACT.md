@@ -6,7 +6,7 @@
 ## 1. Overview
 
 ### 1.1 Purpose
-This system enables **text replacement** and **natural-language edits via an external AI service** in Elementor page content via a REST API keyed by page URL. Supported widgets include **heading**, **text-editor**, **button**, **icon**, **image-box**, **icon-box**, **testimonial**, **counter**, **animated-headline**, **flip-box**, **icon-list**, **accordion**, **tabs**, **price-list**, **price-table**. Each widget can expose multiple text fields and optional link/URL; repeater widgets expose per-item text and link. Find/replace uses **substring (containment)** match and is applied only when **exactly one** slot contains the find. Apply-edits accept **new_text** and/or **new_url**/new_link, with optional **field** and **item_index** to target specific slots. Widget-elements are identified by Elementor's stable **`id`** or index **path**. The plugin calls a **single external AI edit service URL** (your proxy); no API key or model is stored in WordPress.
+This system enables **text replacement** and **natural-language edits via an external AI service** in Elementor page content via a REST API keyed by page URL. Supported widgets include **heading**, **text-editor**, **button**, **icon**, **image-box**, **icon-box**, **testimonial**, **counter**, **animated-headline**, **flip-box**, **icon-list**, **accordion**, **tabs**, **price-list**, **price-table**. Each widget can expose multiple text fields and optional link/URL; repeater widgets expose per-item text and link. **Image widget** and **container/section background image** are exposed as **image slots** (Inspect returns `image_slots`; apply-edits accept **new_image_url** and/or **new_attachment_id**). Find/replace uses **substring (containment)** match and is applied only when **exactly one** slot contains the find. Apply-edits accept **new_text**, **new_url**/new_link, or **new_image_url**/new_attachment_id (or **new_image**: { url?, id? }), with optional **field** and **item_index** for text/URL slots. Widget-elements are identified by Elementor's stable **`id`** or index **path**. The plugin calls a **single external AI edit service URL** (your proxy); no API key or model is stored in WordPress.
 
 ### 1.2 Non-Goals
 * Does not handle authentication beyond WordPress (no custom auth)
@@ -83,11 +83,11 @@ Brief description of each:
 ### 4.2 Key Attributes
 * **Replace request:** `url` (required), `find` (required), `replace` (required), `widget_types` (optional, default `['text-editor','heading']`). Replace-text searches all supported text slots for the given widget_types.
 * **Replace result:** `status` ∈ { `updated` | `not_found` | `ambiguous` }, `post_id`, `matches_found`, `matches_replaced`; `candidates` only when `ambiguous` (each candidate includes field, item_index when applicable).
-* **Inspect result:** `post_id`, `data_structure`, `elements_count`, `text_fields` (id, widget_type, field, preview, path; item_index when applicable). Optional query param `widget_types` (default text-editor, heading).
+* **Inspect result:** `post_id`, `data_structure`, `elements_count`, `text_fields` (id, widget_type, field, preview, path; item_index when applicable), **image_slots** (id, path, slot_type: 'image'|'background_image', el_type, widget_type?, image_url, image_id?). Optional query param `widget_types` (default text-editor, heading).
 * **LlmEdit request:** `url` (required), `instruction` (required), `widget_types` (optional).
 * **LlmEdit result:** `status` (`ok` | `error`), `post_id`, `applied_count`, `failed` ([{ id?, path?, error }]); on service failure, 502 with `message`.
-* **ApplyEdits request:** `url` (required), `edits` (required; array of edit items), `widget_types` (optional). Each edit item: at least one of `id` or `path`; at least one of `new_text` or `new_url`/`new_link`; optional `field`, `item_index` (0-based). `new_link` can be `{ url, is_external?, nofollow? }`. Backward compatible: `{ id, new_text }` applies to primary text field.
-* **ApplyEdits result:** Same as LlmEdit result.
+* **ApplyEdits request:** `url` (required), `edits` (required; array of edit items), `widget_types` (optional). Each edit item: at least one of `id` or `path`; at least one of `new_text`, `new_url`/`new_link`, or **new_image_url**/new_attachment_id (or **new_image**: { url?, id? }); optional `field`, `item_index` (0-based). `new_link` can be `{ url, is_external?, nofollow? }`. Image edits target Image widget or container/section background_image by id/path. Backward compatible: `{ id, new_text }` applies to primary text field.
+* **ApplyEdits result:** Same as LlmEdit result; includes **applied_image_edits** when image edits were applied.
 
 ---
 
@@ -100,18 +100,18 @@ Brief description of each:
 
 ### Inspect (GET /ai-elementor/v1/inspect?url=...)
 * **Input:** `url` (query).
-* **Output:** Post ID, data structure type, element count, and list of text fields (id, widget_type, field, preview, path) for debugging.
+* **Output:** Post ID, data structure type, element count, list of text fields (id, widget_type, field, preview, path), and **image_slots** (id, path, slot_type, el_type, image_url, image_id?) for Image widget and container/section background image.
 * **Rules:** Same permission as replace (edit_post); read-only; no persistence changes.
 
 ### LlmEdit (POST /ai-elementor/v1/llm-edit)
 * **Input:** `url`, `instruction` (natural language), optional `widget_types`.
 * **Output:** `status` (`ok` | `error`), `post_id`, `applied_count`, `failed` ([{ id?, path?, error }]). On AI service failure, 502 with `message`.
-* **Rules:** Resolve URL → post; load Elementor data; build dictionary (id, path, widget_type, text) via `buildPageDictionary`; call `LlmClient::requestEdits(dictionary, instruction)`; for each edit use `replaceById` if id present else `replaceByPath`; save once if any applied; regenerate cache. Empty edits = success with `applied_count: 0`.
+* **Rules:** Resolve URL → post; load Elementor data; build dictionary (id, path, widget_type, field, text, link_url?) via `buildPageDictionary`; build **image_slots** (id, path, slot_type, image_url, image_id?) via `buildImageSlots`; call `LlmClient::requestEdits(dictionary, instruction, image_slots)`. The external AI may return **text** edits (new_text), **link** edits (new_url/new_link for slots with link_url), and **image** edits (new_image_url/new_attachment_id or new_image for image_slots). For each edit: text → replaceById/replaceByPath; link → replaceUrlById/replaceUrlByPath; image → replaceImageById/replaceImageByPath (slot_type from getImageSlotTypeById/getImageSlotTypeByPath). Save once if any applied; regenerate cache. Empty edits = success with `applied_count: 0`.
 
 ### ApplyEdits (POST /ai-elementor/v1/apply-edits)
 * **Input:** `url`, `edits` (array of edit items), optional `widget_types`. Each edit: at least one of `id` or `path`; at least one of `new_text` or `new_url`/`new_link`; optional `field`, `item_index`. Backward compatible: `{ id, new_text }` applies to primary text field.
 * **Output:** Same as LlmEdit (status, post_id, applied_count, failed).
-* **Rules:** No AI service call; same permission and apply logic (prefer id over path). Text edits use replaceById/replaceByPath with optional field/item_index; URL edits use replaceUrlById/replaceUrlByPath with optional item_index. For clients that call their own AI service and only need to apply edits.
+* **Rules:** No AI service call; same permission and apply logic (prefer id over path). Text edits use replaceById/replaceByPath with optional field/item_index; URL edits use replaceUrlById/replaceUrlByPath with optional item_index; image edits use replaceImageById/replaceImageByPath with slot_type from getImageSlotTypeById/getImageSlotTypeByPath (new_image_url and/or new_attachment_id; URL resolved from attachment when only id provided). For clients that call their own AI service and only need to apply edits.
 
 ### CreateApplicationPassword (POST /ai-elementor/v1/create-application-password)
 * **Input:** None (POST body optional).
@@ -147,6 +147,11 @@ ElementorDataStore
 ElementorTraverser
   findAndMaybeReplace(&data, find, replace, widget_types): { matches_found, matches_replaced, candidates, data }  # match = contains (normalized); searches all text slots
   buildPageDictionary(data, widget_types?, max_text_len?): [{ id, path, widget_type, field, text, item_index?, link_url? }, ...]
+  buildImageSlots(data): [{ id, path, slot_type, el_type, widget_type?, image_url, image_id? }, ...]  # Image widget + container/section background_image
+  getImageSlotTypeByPath(data, path): ?string  # 'image' | 'background_image' | null
+  getImageSlotTypeById(&data, id): ?string
+  replaceImageByPath(&data, path, new_url, new_attachment_id?, slot_type): bool  # slot_type: 'image' | 'background_image'
+  replaceImageById(&data, id, new_url, new_attachment_id?, slot_type): bool
   replaceByPath(&data, path, new_text, widget_types, field?, item_index?): bool
   replaceById(&data, id, new_text, widget_types, field?, item_index?): bool
   replaceUrlByPath(&data, path, new_url_or_link, widget_types, item_index?): bool
@@ -157,7 +162,7 @@ ElementorTraverser
   DEFAULT_WIDGET_TYPES, SUPPORTED_WIDGET_TYPES  # constants
 
 LlmClient
-  requestEdits(dictionary: array, instruction): { edits: [...], error: string|null }  # edits: id?, path?, field?, item_index?, new_text?, new_url?, new_link?; config: AI service URL only
+  requestEdits(dictionary: array, instruction, image_slots?: array): { edits: [...], error: string|null }  # Sends dictionary, image_slots, instruction, edit_capabilities to AI. edits: id?, path?, field?, item_index?, new_text?, new_url?, new_link?, new_image_url?, new_attachment_id?, new_image?; config: AI service URL only
 
 Normalizer
   normalize(text: ?string): string
@@ -233,6 +238,7 @@ Interfaces are implicit (PHP classes); infrastructure (WP meta, Elementor API) i
 ## 11. Evolution Notes
 
 * **Plan 1 (implemented):** More widgets (button, icon, image-box, icon-box, testimonial, counter, animated-headline, flip-box, icon-list, accordion, tabs, price-list, price-table), multi-field and repeater support, URL/link editing (new_url/new_link in apply-edits), extended dictionary (field, item_index, link_url), backward-compatible apply-edits (primary field when field omitted).
+* **Plan 2 (implemented):** Image widget and container/section background image: buildImageSlots, replaceImageByPath, replaceImageById, getImageSlotTypeByPath/getImageSlotTypeById; Inspect returns image_slots; apply-edits extended with new_image_url, new_attachment_id (or new_image: { url?, id? }); image edits resolve slot_type by id/path and apply via traverser; applied_image_edits in response; Admin Inspect shows image_slots table, Apply-edits placeholder includes image example. **LLM support:** llm-edit sends dictionary (with link_url), image_slots, instruction, and edit_capabilities to the AI; the AI may return text (new_text), link (new_url/new_link), and image (new_image_url/new_attachment_id/new_image) edits; plugin applies all three. Link edits were already supported; image_slots and image edits added. Optional sideload: when "Sideload images from URL" is enabled, image edits with only a URL are downloaded into the media library.
 * **Potential extensions:** Optional case-insensitive match, batch by URL list; dry-run for AI edits (return proposed edits without applying); rate limiting or optimistic locking; optional `match=exact` for replace-text to force exact equality.
 * **Limitations:** Default widget_types remain text-editor and heading for backward compatibility; clients can pass full SUPPORTED_WIDGET_TYPES for full coverage; no undo; no conflict detection—concurrent edits are last-write-wins; path is valid only for current document version (use id for stability).
 * **Risks:** Elementor schema or API changes may require updates to traverser or cache regeneration; large pages may hit token limits (dictionary truncation via `max_text_len`); external service cost and latency.
@@ -254,4 +260,4 @@ Interfaces are implicit (PHP classes); infrastructure (WP meta, Elementor API) i
 ## 13. Last Updated
 
 * **Date:** 2026-02-01  
-* **Change context:** **Plan 1 implemented:** More widgets (button, icon, image-box, icon-box, testimonial, counter, animated-headline, flip-box, icon-list, accordion, tabs, price-list, price-table); multi-field and repeater support in ElementorTraverser (WIDGET_CONFIG, buildPageDictionary, collectAllTextFields, replaceByPath/replaceById with field/item_index, replaceUrlByPath/replaceUrlById); findAndMaybeReplace across all text slots; apply-edits extended (field, item_index, new_url/new_link); LlmClient and LlmEditController normalize and apply URL edits; verification uses getTextAtSlot/getLinkUrlAtSlot; inspect optional widget_types; Admin placeholder and help text updated; SYSTEM_ARTIFACT and README updated.
+* **Change context:** **Plan 2 implemented:** Image widget and container/section background image support; ElementorTraverser buildImageSlots, replaceImageByPath, replaceImageById, getImageSlotTypeByPath/getImageSlotTypeById; Inspect returns image_slots; apply-edits accepts new_image_url/new_attachment_id/new_image; LlmEditController normalizes and applies image edits (slot_type resolution, attachment URL when only id); applied_image_edits in response; ReplaceTextController Inspect adds image_slots; Admin Inspect shows image_slots table, Apply-edits placeholder with image example; Routes and docs updated. LLM contract documented: request includes dictionary (with link_url), image_slots, instruction, edit_capabilities; response edits may be text (new_text), link (new_url/new_link), image (new_image_url/new_attachment_id/new_image). AI_SERVICE.md and README updated with full contract.

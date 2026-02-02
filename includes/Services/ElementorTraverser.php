@@ -63,6 +63,14 @@ final class ElementorTraverser {
 		'animated-headline', 'flip-box', 'icon-list', 'accordion', 'tabs', 'price-list', 'price-table',
 	];
 
+	/**
+	 * Image slot types: Image widget (control "image") and container/section background image.
+	 * Elementor Image widget: settings.image = { url, id? }. Container/Section: settings.background_image = { url, id? }.
+	 * Verify keys in elementor/includes/widgets/image.php and includes/controls/groups/background.php if your version differs.
+	 */
+	private const IMAGE_SLOT_TYPE_IMAGE = 'image';
+	private const IMAGE_SLOT_TYPE_BACKGROUND = 'background_image';
+
 	/** Default widget types used when none specified (all supported types). */
 	public const DEFAULT_WIDGET_TYPES = self::SUPPORTED_WIDGET_TYPES;
 
@@ -134,6 +142,147 @@ final class ElementorTraverser {
 			return $data['content'];
 		}
 		return $data;
+	}
+
+	/**
+	 * Build list of image and background_image slots from the element tree.
+	 * Image widget: elType === 'widget', widgetType === 'image', settings.image = { url, id? }.
+	 * Container/Section: elType === 'container' or 'section', settings.background_image = { url, id? } (desktop only; responsive keys like _background_image not included in v1).
+	 *
+	 * @param array $data Elementor data (document with "content" or raw elements array).
+	 * @return array<int, array{ id: string, path: string, slot_type: string, el_type: string, widget_type?: string, image_url: string, image_id?: int }>
+	 */
+	public static function buildImageSlots( array $data ): array {
+		$elements = self::getElementsRoot( $data );
+		if ( ! is_array( $elements ) ) {
+			return [];
+		}
+		$slots = [];
+		self::traverseBuildImageSlots( $elements, [], $slots );
+		return $slots;
+	}
+
+	/**
+	 * Get slot type for an image edit at the given path ('image' or 'background_image'), or null if not an image slot.
+	 *
+	 * @param array  $data Elementor data.
+	 * @param string $path Path string (e.g. "0/1/2").
+	 * @return string|null 'image' | 'background_image' | null
+	 */
+	public static function getImageSlotTypeByPath( array $data, string $path ): ?string {
+		$path = trim( $path );
+		if ( $path === '' ) {
+			return null;
+		}
+		$indices = array_map( 'intval', explode( '/', $path ) );
+		$elements = self::getElementsRoot( $data );
+		$node = &self::getNodeByPath( $elements, $indices );
+		if ( $node === null || ! is_array( $node ) ) {
+			return null;
+		}
+		$el_type = $node['elType'] ?? '';
+		$widget_type = $node['widgetType'] ?? '';
+		if ( $el_type === 'widget' && $widget_type === 'image' ) {
+			return self::IMAGE_SLOT_TYPE_IMAGE;
+		}
+		if ( ( $el_type === 'container' || $el_type === 'section' ) && self::nodeHasBackgroundImage( $node ) ) {
+			return self::IMAGE_SLOT_TYPE_BACKGROUND;
+		}
+		return null;
+	}
+
+	/**
+	 * Get slot type for an image edit at the given id ('image' or 'background_image'), or null if not an image slot.
+	 *
+	 * @param array  $data Elementor data (passed by reference).
+	 * @param string $id  Element id.
+	 * @return string|null 'image' | 'background_image' | null
+	 */
+	public static function getImageSlotTypeById( array &$data, string $id ): ?string {
+		$path = self::findPathById( $data, $id );
+		if ( $path === null ) {
+			return null;
+		}
+		return self::getImageSlotTypeByPath( $data, $path );
+	}
+
+	/**
+	 * Replace image or background image at the given path. Mutates $data in place.
+	 *
+	 * @param array  $data              Elementor data (passed by reference).
+	 * @param string $path              Path string from dictionary.
+	 * @param string $new_url           New image URL (empty = clear url; Elementor may still need url for display).
+	 * @param int|null $new_attachment_id New attachment ID (null or 0 = clear id; empty id with url still displays by URL).
+	 * @param string $slot_type         'image' (Image widget) or 'background_image' (container/section).
+	 * @return bool True if replacement was applied.
+	 */
+	public static function replaceImageByPath( array &$data, string $path, string $new_url, ?int $new_attachment_id, string $slot_type ): bool {
+		$path = trim( $path );
+		if ( $path === '' ) {
+			return false;
+		}
+		$indices = array_map( 'intval', explode( '/', $path ) );
+		$elements = &self::getElementsRoot( $data );
+		$node = &self::getNodeByPath( $elements, $indices );
+		if ( $node === null || ! is_array( $node ) ) {
+			return false;
+		}
+		if ( $slot_type === self::IMAGE_SLOT_TYPE_IMAGE ) {
+			$el_type = $node['elType'] ?? '';
+			$widget_type = $node['widgetType'] ?? '';
+			if ( $el_type !== 'widget' || $widget_type !== 'image' ) {
+				return false;
+			}
+			if ( ! is_array( $node['settings'] ?? null ) ) {
+				$node['settings'] = [];
+			}
+			$node['settings']['image'] = [
+				'url' => $new_url,
+			];
+			if ( $new_attachment_id !== null && $new_attachment_id > 0 ) {
+				$node['settings']['image']['id'] = $new_attachment_id;
+			}
+			return true;
+		}
+		if ( $slot_type === self::IMAGE_SLOT_TYPE_BACKGROUND ) {
+			$el_type = $node['elType'] ?? '';
+			if ( $el_type !== 'container' && $el_type !== 'section' ) {
+				return false;
+			}
+			if ( ! is_array( $node['settings'] ?? null ) ) {
+				$node['settings'] = [];
+			}
+			$node['settings']['background_image'] = [
+				'url' => $new_url,
+			];
+			if ( $new_attachment_id !== null && $new_attachment_id > 0 ) {
+				$node['settings']['background_image']['id'] = $new_attachment_id;
+			}
+			return true;
+		}
+		return false;
+	}
+
+	/**
+	 * Replace image or background image for the element with the given id. Resolves id to path then calls replaceImageByPath.
+	 *
+	 * @param array  $data              Elementor data (passed by reference).
+	 * @param string $id               Element id from dictionary.
+	 * @param string $new_url          New image URL.
+	 * @param int|null $new_attachment_id New attachment ID (null or 0 = clear id).
+	 * @param string $slot_type        'image' or 'background_image'.
+	 * @return bool True if replacement was applied.
+	 */
+	public static function replaceImageById( array &$data, string $id, string $new_url, ?int $new_attachment_id, string $slot_type ): bool {
+		$id = trim( $id );
+		if ( $id === '' ) {
+			return false;
+		}
+		$path = self::findPathById( $data, $id );
+		if ( $path === null ) {
+			return false;
+		}
+		return self::replaceImageByPath( $data, $path, $new_url, $new_attachment_id, $slot_type );
 	}
 
 	/**
@@ -376,6 +525,100 @@ final class ElementorTraverser {
 			return false;
 		}
 		return self::replaceUrlByPath( $data, $path, $new_url_or_link, $widget_types, $item_index );
+	}
+
+	/**
+	 * Check if a node has a background image set (settings.background_image with url).
+	 * Elementor 3.x: Style > Background > Image; key is typically background_image. Verify in includes/controls/groups/background.php.
+	 *
+	 * @param array $node Element node.
+	 * @return bool
+	 */
+	private static function nodeHasBackgroundImage( array $node ): bool {
+		$bg = $node['settings']['background_image'] ?? null;
+		if ( ! is_array( $bg ) ) {
+			return false;
+		}
+		return isset( $bg['url'] ) && is_string( $bg['url'] ) && $bg['url'] !== '';
+	}
+
+	/**
+	 * Recursively collect image slots (Image widget and container/section background_image).
+	 *
+	 * @param array $elements   Elements array.
+	 * @param array $path_prefix Current path indices.
+	 * @param array $slots      Output: list of { id, path, slot_type, el_type, widget_type?, image_url, image_id? }.
+	 */
+	private static function traverseBuildImageSlots( array $elements, array $path_prefix, array &$slots ): void {
+		if ( ! is_array( $elements ) || empty( $elements ) ) {
+			return;
+		}
+		foreach ( $elements as $index => $node ) {
+			if ( ! is_array( $node ) ) {
+				continue;
+			}
+			$path = array_merge( $path_prefix, [ $index ] );
+			$path_str = implode( '/', array_map( 'strval', $path ) );
+			$el_type = $node['elType'] ?? '';
+			$widget_type = $node['widgetType'] ?? '';
+			$el_id = isset( $node['id'] ) && is_string( $node['id'] ) ? $node['id'] : '';
+
+			// Image widget: elType === 'widget', widgetType === 'image', settings.image = { url, id? }.
+			if ( $el_type === 'widget' && $widget_type === 'image' ) {
+				$settings = $node['settings'] ?? [];
+				$img = $settings['image'] ?? [];
+				$image_url = is_array( $img ) && isset( $img['url'] ) && is_string( $img['url'] ) ? $img['url'] : '';
+				$image_id = null;
+				if ( is_array( $img ) && isset( $img['id'] ) ) {
+					$raw_id = $img['id'];
+					if ( is_int( $raw_id ) || ( is_string( $raw_id ) && is_numeric( $raw_id ) ) ) {
+						$image_id = (int) $raw_id;
+					}
+				}
+				$entry = [
+					'id'         => $el_id,
+					'path'       => $path_str,
+					'slot_type'  => self::IMAGE_SLOT_TYPE_IMAGE,
+					'el_type'    => 'widget',
+					'widget_type'=> 'image',
+					'image_url'  => $image_url,
+				];
+				if ( $image_id !== null && $image_id > 0 ) {
+					$entry['image_id'] = $image_id;
+				}
+				$slots[] = $entry;
+			}
+
+			// Container or section with background image (desktop only; responsive _background_image not included in v1).
+			if ( ( $el_type === 'container' || $el_type === 'section' ) && self::nodeHasBackgroundImage( $node ) ) {
+				$settings = $node['settings'] ?? [];
+				$bg = $settings['background_image'] ?? [];
+				$image_url = is_array( $bg ) && isset( $bg['url'] ) && is_string( $bg['url'] ) ? $bg['url'] : '';
+				$image_id = null;
+				if ( is_array( $bg ) && isset( $bg['id'] ) ) {
+					$raw_id = $bg['id'];
+					if ( is_int( $raw_id ) || ( is_string( $raw_id ) && is_numeric( $raw_id ) ) ) {
+						$image_id = (int) $raw_id;
+					}
+				}
+				$entry = [
+					'id'        => $el_id,
+					'path'      => $path_str,
+					'slot_type' => self::IMAGE_SLOT_TYPE_BACKGROUND,
+					'el_type'   => $el_type,
+					'image_url' => $image_url,
+				];
+				if ( $image_id !== null && $image_id > 0 ) {
+					$entry['image_id'] = $image_id;
+				}
+				$slots[] = $entry;
+			}
+
+			$children = $node['elements'] ?? [];
+			if ( is_array( $children ) && ! empty( $children ) ) {
+				self::traverseBuildImageSlots( $children, $path, $slots );
+			}
+		}
 	}
 
 	/** Ensure repeater array has an item at index (fill with empty arrays). */

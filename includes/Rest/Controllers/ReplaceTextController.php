@@ -114,6 +114,7 @@ final class ReplaceTextController {
 				'data_structure'   => null,
 				'elements_count'  => 0,
 				'text_fields'      => [],
+				'image_slots'      => [],
 			], 200 );
 		}
 
@@ -129,13 +130,22 @@ final class ReplaceTextController {
 		if ( empty( $widget_types ) ) {
 			$widget_types = ElementorTraverser::DEFAULT_WIDGET_TYPES;
 		}
-		$info = ElementorTraverser::collectAllTextFields( $data, $widget_types );
+		try {
+			$info = ElementorTraverser::collectAllTextFields( $data, $widget_types );
+			$image_slots = ElementorTraverser::buildImageSlots( $data );
+		} catch ( \Throwable $e ) {
+			return new WP_REST_Response( [
+				'code'    => 'internal_error',
+				'message' => $e->getMessage(),
+			], 500 );
+		}
 
 		return new WP_REST_Response( [
 			'post_id'         => $post_id,
 			'data_structure'  => $info['data_structure'],
 			'elements_count'  => $info['elements_count'],
 			'text_fields'     => $info['text_fields'],
+			'image_slots'     => $image_slots,
 		], 200 );
 	}
 

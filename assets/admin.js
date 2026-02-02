@@ -10,6 +10,38 @@
 	const nonce = config.nonce || '';
 	const siteUrl = config.site_url || '';
 
+	// #region agent log — in WordPress open DevTools (F12) → Console to see these
+	function logToDebug( message, data ) {
+		if ( typeof console !== 'undefined' && console.warn ) {
+			console.warn( '[AI Elementor Sync]', message, data || {} );
+		}
+	}
+	function responseToJson( res ) {
+		return res.text().then( function ( text ) {
+			var contentType = ( res.headers.get( 'Content-Type' ) || '' ).toLowerCase();
+			var looksLikeHtml = text.trim().charAt( 0 ) === '<' || contentType.indexOf( 'text/html' ) !== -1;
+			logToDebug( 'REST response', {
+				status: res.status,
+				url: res.url,
+				contentType: contentType,
+				bodyLength: text.length,
+				startsWithAngle: text.trim().charAt( 0 ) === '<'
+			} );
+			if ( looksLikeHtml ) {
+				var msg = 'Server returned HTML instead of JSON (status ' + res.status + '). The REST API may be unavailable, or you may need to log in again.';
+				logToDebug( 'HTML response, skipping parse', { status: res.status, url: res.url } );
+				throw new Error( msg );
+			}
+			try {
+				return JSON.parse( text );
+			} catch ( e ) {
+				logToDebug( 'JSON parse failed', { error: e.message, bodyStart: text.substring( 0, 200 ) } );
+				throw e;
+			}
+		} );
+	}
+	// #endregion
+
 	function getHeaders( jsonBody ) {
 		const headers = {
 			'X-WP-Nonce': nonce,
@@ -40,6 +72,32 @@
 		return '<pre>' + ( typeof data === 'string' ? data : JSON.stringify( data, null, 2 ) ) + '</pre>';
 	}
 
+	function renderInspectResult( data ) {
+		if ( ! data ) return renderJson( data );
+		if ( data.code === 'internal_error' ) {
+			return '<p class="error"><strong>Server error:</strong> ' + escapeHtml( data.message || 'Unknown error' ) + '</p>' + renderJson( data );
+		}
+		const imageSlots = data.image_slots;
+		let html = '';
+		if ( Array.isArray( imageSlots ) && imageSlots.length > 0 ) {
+			html += '<div class="ai-elementor-sync-inspect-image-slots">';
+			html += '<h3 class="ai-elementor-sync-result-heading">Image slots (' + imageSlots.length + ')</h3>';
+			html += '<table class="widefat striped"><thead><tr><th>path</th><th>slot_type</th><th>el_type</th><th>image_url</th><th>image_id</th></tr></thead><tbody>';
+			imageSlots.forEach( function ( slot ) {
+				const url = ( slot.image_url || '' ).length > 60 ? ( slot.image_url || '' ).substring( 0, 60 ) + '…' : ( slot.image_url || '' );
+				html += '<tr><td><code>' + escapeHtml( slot.path || '' ) + '</code></td>';
+				html += '<td>' + escapeHtml( slot.slot_type || '' ) + '</td>';
+				html += '<td>' + escapeHtml( slot.el_type || '' ) + '</td>';
+				html += '<td title="' + escapeHtml( slot.image_url || '' ) + '">' + escapeHtml( url ) + '</td>';
+				html += '<td>' + ( slot.image_id != null ? escapeHtml( String( slot.image_id ) ) : '—' ) + '</td></tr>';
+			} );
+			html += '</tbody></table></div>';
+		}
+		html += '<div class="ai-elementor-sync-inspect-full"><h3 class="ai-elementor-sync-result-heading">Full response</h3>';
+		html += renderJson( data ) + '</div>';
+		return html;
+	}
+
 	// Tab switching (optional onShow callback for tab name)
 	function initTabs( onTabShow ) {
 		const tabs = document.querySelectorAll( '.ai-elementor-sync-tabs .nav-tab' );
@@ -64,17 +122,21 @@
 	}
 
 	function loadSettings() {
-		fetch( restUrl + '/settings', {
+		var url = restUrl + '/settings';
+		logToDebug( 'fetch start', { url: url, restUrl: restUrl }, 'C' );
+		fetch( url, {
 			method: 'GET',
 			headers: getHeaders( false ),
 			credentials: 'same-origin',
 		} )
-			.then( function ( res ) { return res.json(); } )
+			.then( function ( res ) { return responseToJson( res ); } )
 			.then( function ( data ) {
 				const ai = document.getElementById( 'settings-ai-service-url' );
 				const llm = document.getElementById( 'settings-llm-register-url' );
+				const sideload = document.getElementById( 'settings-sideload-images' );
 				if ( ai && data.ai_service_url !== undefined ) ai.value = data.ai_service_url || '';
 				if ( llm && data.llm_register_url !== undefined ) llm.value = data.llm_register_url || '';
+				if ( sideload && data.sideload_images !== undefined ) sideload.checked = !! data.sideload_images;
 			} )
 			.catch( function () {} );
 	}
@@ -83,14 +145,23 @@
 		const container = document.getElementById( 'log-entries' );
 		if ( ! container ) return;
 		container.textContent = 'Loading…';
+		logToDebug( 'fetch start', { url: restUrl + '/log' }, 'C' );
 		fetch( restUrl + '/log', {
 			method: 'GET',
 			headers: getHeaders( false ),
 			credentials: 'same-origin',
 		} )
-			.then( function ( res ) { return res.json(); } )
-			.then( function ( data ) {
-				const entries = data.entries || [];
+			.then( function ( res ) {
+				return responseToJson( res ).then( function ( data ) {
+					return { ok: res.ok, status: res.status, data: data };
+				} );
+			} )
+			.then( function ( result ) {
+				if ( ! result.ok && result.data && result.data.code === 'internal_error' ) {
+					container.innerHTML = '<p class="error">Failed to load log: ' + escapeHtml( result.data.message || 'Server error ' + result.status ) + '</p>';
+					return;
+				}
+				const entries = ( result.data && result.data.entries ) || [];
 				if ( entries.length === 0 ) {
 					container.innerHTML = '<p>No log entries yet.</p>';
 					return;
@@ -120,17 +191,20 @@
 			e.preventDefault();
 			const aiUrl = ( document.getElementById( 'settings-ai-service-url' ) || {} ).value?.trim();
 			const llmUrl = ( document.getElementById( 'settings-llm-register-url' ) || {} ).value?.trim();
+			const sideloadEl = document.getElementById( 'settings-sideload-images' );
+			const sideloadImages = sideloadEl ? sideloadEl.checked : false;
 			const resultEl = document.getElementById( 'settings-save-result' );
 			if ( resultEl ) resultEl.textContent = 'Saving…';
+			logToDebug( 'fetch start', { url: restUrl + '/settings', method: 'POST' }, 'C' );
 			fetch( restUrl + '/settings', {
 				method: 'POST',
 				headers: getHeaders( true ),
 				credentials: 'same-origin',
-				body: JSON.stringify( { ai_service_url: aiUrl, llm_register_url: llmUrl } ),
+				body: JSON.stringify( { ai_service_url: aiUrl, llm_register_url: llmUrl, sideload_images: sideloadImages } ),
 			} )
 				.then( function ( res ) {
-					return res.json().then( function ( data ) {
-						return { ok: res.ok, data };
+					return responseToJson( res ).then( function ( data ) {
+						return { ok: res.ok, data: data };
 					} );
 				} )
 				.then( function ( result ) {
@@ -154,6 +228,7 @@
 		if ( refreshBtn ) refreshBtn.addEventListener( 'click', loadLog );
 		if ( clearBtn ) {
 			clearBtn.addEventListener( 'click', function () {
+				logToDebug( 'fetch start', { url: restUrl + '/clear-log' }, 'C' );
 				fetch( restUrl + '/clear-log', {
 					method: 'POST',
 					headers: getHeaders( true ),
@@ -176,18 +251,20 @@
 			if ( ! url ) return;
 			setLoading( 'result-inspect' );
 			const reqUrl = restUrl + '/inspect?url=' + encodeURIComponent( url );
+			logToDebug( 'fetch start', { url: reqUrl, restUrl: restUrl }, 'C' );
 			fetch( reqUrl, {
 				method: 'GET',
 				headers: getHeaders( false ),
 				credentials: 'same-origin',
 			} )
 				.then( function ( res ) {
-					return res.json().then( function ( data ) {
-						return { ok: res.ok, status: res.status, data };
+					return responseToJson( res ).then( function ( data ) {
+						return { ok: res.ok, status: res.status, data: data };
 					} );
 				} )
 				.then( function ( result ) {
-					setResult( 'result-inspect', renderJson( result.data ), ! result.ok );
+					const content = renderInspectResult( result.data );
+					setResult( 'result-inspect', content, ! result.ok );
 				} )
 				.catch( function ( err ) {
 					setResult( 'result-inspect', '<pre>' + ( err.message || String( err ) ) + '</pre>', true );
@@ -206,6 +283,7 @@
 			const replace = ( document.getElementById( 'replace-replace' ) || {} ).value;
 			if ( ! url || find === undefined || replace === undefined ) return;
 			setLoading( 'result-replace-text' );
+			logToDebug( 'fetch start', { url: restUrl + '/replace-text' }, 'C' );
 			fetch( restUrl + '/replace-text', {
 				method: 'POST',
 				headers: getHeaders( true ),
@@ -213,8 +291,8 @@
 				body: JSON.stringify( { url, find, replace } ),
 			} )
 				.then( function ( res ) {
-					return res.json().then( function ( data ) {
-						return { ok: res.ok, status: res.status, data };
+					return responseToJson( res ).then( function ( data ) {
+						return { ok: res.ok, status: res.status, data: data };
 					} );
 				} )
 				.then( function ( result ) {
@@ -236,6 +314,7 @@
 			const instruction = ( document.getElementById( 'llm-instruction' ) || {} ).value;
 			if ( ! url || instruction === undefined ) return;
 			setLoading( 'result-llm-edit' );
+			logToDebug( 'fetch start', { url: restUrl + '/llm-edit' }, 'C' );
 			fetch( restUrl + '/llm-edit', {
 				method: 'POST',
 				headers: getHeaders( true ),
@@ -243,8 +322,8 @@
 				body: JSON.stringify( { url, instruction } ),
 			} )
 				.then( function ( res ) {
-					return res.json().then( function ( data ) {
-						return { ok: res.ok, status: res.status, data };
+					return responseToJson( res ).then( function ( data ) {
+						return { ok: res.ok, status: res.status, data: data };
 					} );
 				} )
 				.then( function ( result ) {
@@ -316,6 +395,7 @@
 				return;
 			}
 			setLoading( 'result-apply-edits' );
+			logToDebug( 'fetch start', { url: restUrl + '/apply-edits' }, 'C' );
 			fetch( restUrl + '/apply-edits', {
 				method: 'POST',
 				headers: getHeaders( true ),
@@ -323,8 +403,8 @@
 				body: JSON.stringify( { url, edits } ),
 			} )
 				.then( function ( res ) {
-					return res.json().then( function ( data ) {
-						return { ok: res.ok, status: res.status, data };
+					return responseToJson( res ).then( function ( data ) {
+						return { ok: res.ok, status: res.status, data: data };
 					} );
 				} )
 				.then( function ( result ) {
@@ -342,6 +422,7 @@
 		if ( ! btn ) return;
 		btn.addEventListener( 'click', function () {
 			setLoading( 'app-password-result' );
+			logToDebug( 'fetch start', { url: restUrl + '/create-application-password' }, 'C' );
 			fetch( restUrl + '/create-application-password', {
 				method: 'POST',
 				headers: getHeaders( true ),
@@ -349,8 +430,8 @@
 				body: JSON.stringify( {} ),
 			} )
 				.then( function ( res ) {
-					return res.json().then( function ( data ) {
-						return { ok: res.ok, status: res.status, data };
+					return responseToJson( res ).then( function ( data ) {
+						return { ok: res.ok, status: res.status, data: data };
 					} );
 				} )
 				.then( function ( result ) {
