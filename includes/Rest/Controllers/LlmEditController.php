@@ -5,11 +5,11 @@ declare(strict_types=1);
 namespace AiElementorSync\Rest\Controllers;
 
 use AiElementorSync\Services\CacheRegenerator;
+use AiElementorSync\Services\EditTargetResolver;
 use AiElementorSync\Services\ElementorDataStore;
 use AiElementorSync\Services\ElementorTraverser;
 use AiElementorSync\Services\ImageSideload;
 use AiElementorSync\Services\LlmClient;
-use AiElementorSync\Services\UrlResolver;
 use AiElementorSync\Support\Errors;
 use AiElementorSync\Support\Logger;
 use WP_REST_Request;
@@ -31,19 +31,21 @@ final class LlmEditController {
 		if ( empty( $params ) ) {
 			$params = $request->get_body_params();
 		}
-		$url = isset( $params['url'] ) && is_string( $params['url'] ) ? trim( $params['url'] ) : '';
 		$instruction = isset( $params['instruction'] ) && is_string( $params['instruction'] ) ? $params['instruction'] : null;
 		$widget_types = isset( $params['widget_types'] ) && is_array( $params['widget_types'] ) ? $params['widget_types'] : ElementorTraverser::DEFAULT_WIDGET_TYPES;
 
-		if ( $url === '' || $instruction === null ) {
-			return Errors::error_response( 'Missing required parameters: url, instruction.', 0, 400 );
+		if ( $instruction === null ) {
+			return Errors::error_response( 'Missing required parameter: instruction. Provide one of url, template_id, or document_type.', 0, 400 );
 		}
 
-		$post_id = UrlResolver::resolve( $url );
-		if ( $post_id === 0 ) {
-			Logger::log( 'URL could not be resolved', [ 'url' => $url ] );
-			return Errors::error_response( 'URL could not be resolved', 0, 400 );
+		$target_params = EditTargetResolver::getTargetParamsFromRequest( $request );
+		$resolved = EditTargetResolver::fromRequest( $target_params );
+		if ( is_wp_error( $resolved ) ) {
+			Logger::log( 'Edit target could not be resolved', [ 'params' => $target_params, 'error' => $resolved->get_error_message() ] );
+			$status = $resolved->get_error_data()['status'] ?? 400;
+			return Errors::error_response( $resolved->get_error_message(), 0, $status );
 		}
+		$post_id = $resolved['post_id'];
 
 		$post = get_post( $post_id );
 		if ( ! $post ) {
@@ -104,19 +106,21 @@ final class LlmEditController {
 		if ( empty( $params ) ) {
 			$params = $request->get_body_params();
 		}
-		$url = isset( $params['url'] ) && is_string( $params['url'] ) ? trim( $params['url'] ) : '';
 		$edits = isset( $params['edits'] ) && is_array( $params['edits'] ) ? $params['edits'] : null;
 		$widget_types = isset( $params['widget_types'] ) && is_array( $params['widget_types'] ) ? $params['widget_types'] : ElementorTraverser::DEFAULT_WIDGET_TYPES;
 
-		if ( $url === '' || $edits === null ) {
-			return Errors::error_response( 'Missing required parameters: url, edits.', 0, 400 );
+		if ( $edits === null ) {
+			return Errors::error_response( 'Missing required parameter: edits. Provide one of url, template_id, or document_type.', 0, 400 );
 		}
 
-		$post_id = UrlResolver::resolve( $url );
-		if ( $post_id === 0 ) {
-			Logger::log( 'URL could not be resolved', [ 'url' => $url ] );
-			return Errors::error_response( 'URL could not be resolved', 0, 400 );
+		$target_params = EditTargetResolver::getTargetParamsFromRequest( $request );
+		$resolved = EditTargetResolver::fromRequest( $target_params );
+		if ( is_wp_error( $resolved ) ) {
+			Logger::log( 'Edit target could not be resolved', [ 'params' => $target_params, 'error' => $resolved->get_error_message() ] );
+			$status = $resolved->get_error_data()['status'] ?? 400;
+			return Errors::error_response( $resolved->get_error_message(), 0, $status );
 		}
+		$post_id = $resolved['post_id'];
 
 		$post = get_post( $post_id );
 		if ( ! $post ) {

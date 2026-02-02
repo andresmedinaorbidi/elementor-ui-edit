@@ -8,8 +8,9 @@ use AiElementorSync\Rest\Controllers\ApplicationPasswordController;
 use AiElementorSync\Rest\Controllers\LlmEditController;
 use AiElementorSync\Rest\Controllers\ReplaceTextController;
 use AiElementorSync\Rest\Controllers\SettingsController;
+use AiElementorSync\Rest\Controllers\TemplatesController;
+use AiElementorSync\Services\EditTargetResolver;
 use AiElementorSync\Services\ElementorTraverser;
-use AiElementorSync\Services\UrlResolver;
 use WP_REST_Request;
 use WP_REST_Server;
 
@@ -27,17 +28,37 @@ final class Routes {
 	 * Register routes on rest_api_init.
 	 */
 	public static function register(): void {
+		register_rest_route( self::NAMESPACE, 'list-templates', [
+			'methods'             => WP_REST_Server::READABLE,
+			'callback'            => [ TemplatesController::class, 'list_templates' ],
+			'permission_callback' => [ self::class, 'permission_list_templates' ],
+			'args'                => [],
+		] );
+
 		register_rest_route( self::NAMESPACE, 'replace-text', [
 			'methods'             => WP_REST_Server::CREATABLE,
 			'callback'            => [ ReplaceTextController::class, 'replace_text' ],
 			'permission_callback' => [ self::class, 'permission_replace_text' ],
 			'args'                => [
-				'url'           => [
-					'required'          => true,
-					'type'              => 'string',
-					'validate_callback' => function ( $v ) {
-						return is_string( $v ) && trim( $v ) !== '';
-					},
+				'url'            => [
+					'required' => false,
+					'type'     => 'string',
+					'description' => 'Page URL. One of url, template_id, or document_type is required.',
+				],
+				'template_id'    => [
+					'required' => false,
+					'type'     => 'integer',
+					'description' => 'Elementor template post ID. One of url, template_id, or document_type is required.',
+				],
+				'document_type'  => [
+					'required' => false,
+					'type'     => 'string',
+					'description' => 'Template document type (e.g. header, footer). One of url, template_id, or document_type is required.',
+				],
+				'slug'           => [
+					'required' => false,
+					'type'     => 'string',
+					'description' => 'Optional template slug when using document_type.',
 				],
 				'find'          => [
 					'required'          => true,
@@ -60,12 +81,25 @@ final class Routes {
 			'callback'            => [ ReplaceTextController::class, 'inspect' ],
 			'permission_callback' => [ self::class, 'permission_inspect' ],
 			'args'                => [
-				'url'           => [
-					'required'          => true,
-					'type'              => 'string',
-					'validate_callback' => function ( $v ) {
-						return is_string( $v ) && trim( $v ) !== '';
-					},
+				'url'            => [
+					'required' => false,
+					'type'     => 'string',
+					'description' => 'Page URL. One of url, template_id, or document_type is required.',
+				],
+				'template_id'    => [
+					'required' => false,
+					'type'     => 'integer',
+					'description' => 'Elementor template post ID. One of url, template_id, or document_type is required.',
+				],
+				'document_type'  => [
+					'required' => false,
+					'type'     => 'string',
+					'description' => 'Template document type (e.g. header, footer). One of url, template_id, or document_type is required.',
+				],
+				'slug'           => [
+					'required' => false,
+					'type'     => 'string',
+					'description' => 'Optional template slug when using document_type.',
 				],
 				'widget_types'  => [
 					'required' => false,
@@ -81,12 +115,25 @@ final class Routes {
 			'callback'            => [ LlmEditController::class, 'llm_edit' ],
 			'permission_callback' => [ self::class, 'permission_llm_edit' ],
 			'args'                => [
-				'url'           => [
-					'required'          => true,
-					'type'              => 'string',
-					'validate_callback' => function ( $v ) {
-						return is_string( $v ) && trim( $v ) !== '';
-					},
+				'url'            => [
+					'required' => false,
+					'type'     => 'string',
+					'description' => 'Page URL. One of url, template_id, or document_type is required.',
+				],
+				'template_id'    => [
+					'required' => false,
+					'type'     => 'integer',
+					'description' => 'Elementor template post ID. One of url, template_id, or document_type is required.',
+				],
+				'document_type'  => [
+					'required' => false,
+					'type'     => 'string',
+					'description' => 'Template document type (e.g. header, footer). One of url, template_id, or document_type is required.',
+				],
+				'slug'           => [
+					'required' => false,
+					'type'     => 'string',
+					'description' => 'Optional template slug when using document_type.',
 				],
 				'instruction'   => [
 					'required' => true,
@@ -105,12 +152,25 @@ final class Routes {
 			'callback'            => [ LlmEditController::class, 'apply_edits' ],
 			'permission_callback' => [ self::class, 'permission_apply_edits' ],
 			'args'                => [
-				'url'           => [
-					'required'          => true,
-					'type'              => 'string',
-					'validate_callback' => function ( $v ) {
-						return is_string( $v ) && trim( $v ) !== '';
-					},
+				'url'            => [
+					'required' => false,
+					'type'     => 'string',
+					'description' => 'Page URL. One of url, template_id, or document_type is required.',
+				],
+				'template_id'    => [
+					'required' => false,
+					'type'     => 'integer',
+					'description' => 'Elementor template post ID. One of url, template_id, or document_type is required.',
+				],
+				'document_type'  => [
+					'required' => false,
+					'type'     => 'string',
+					'description' => 'Template document type (e.g. header, footer). One of url, template_id, or document_type is required.',
+				],
+				'slug'           => [
+					'required' => false,
+					'type'     => 'string',
+					'description' => 'Optional template slug when using document_type.',
 				],
 				'edits'         => [
 					'required'    => true,
@@ -163,7 +223,23 @@ final class Routes {
 	}
 
 	/**
-	 * Permission callback for replace-text: require auth and edit_post on resolved post.
+	 * Permission callback for list-templates: require auth and edit_posts.
+	 *
+	 * @param WP_REST_Request $request Request.
+	 * @return true|\WP_Error
+	 */
+	public static function permission_list_templates( WP_REST_Request $request ) {
+		if ( ! is_user_logged_in() ) {
+			return new \WP_Error( 'rest_not_logged_in', __( 'Authentication required.', 'ai-elementor-sync' ), [ 'status' => 401 ] );
+		}
+		if ( ! current_user_can( 'edit_posts' ) ) {
+			return new \WP_Error( 'rest_forbidden', __( 'You do not have permission to list templates.', 'ai-elementor-sync' ), [ 'status' => 403 ] );
+		}
+		return true;
+	}
+
+	/**
+	 * Permission callback for replace-text: require auth and edit_post on resolved post (page or template).
 	 *
 	 * @param WP_REST_Request $request Request.
 	 * @return true|WP_Error
@@ -172,35 +248,24 @@ final class Routes {
 		if ( ! is_user_logged_in() ) {
 			return new \WP_Error( 'rest_not_logged_in', __( 'Authentication required.', 'ai-elementor-sync' ), [ 'status' => 401 ] );
 		}
-
-		$params = $request->get_json_params();
-		if ( empty( $params ) ) {
-			$params = $request->get_body_params();
+		$params = EditTargetResolver::getTargetParamsFromRequest( $request );
+		$resolved = EditTargetResolver::fromRequest( $params );
+		if ( is_wp_error( $resolved ) ) {
+			return $resolved;
 		}
-		$url = isset( $params['url'] ) && is_string( $params['url'] ) ? trim( $params['url'] ) : '';
-		if ( $url === '' ) {
-			return new \WP_Error( 'missing_url', __( 'URL is required.', 'ai-elementor-sync' ), [ 'status' => 400 ] );
-		}
-
-		$post_id = UrlResolver::resolve( $url );
-		if ( $post_id === 0 ) {
-			return new \WP_Error( 'url_unresolved', __( 'URL could not be resolved.', 'ai-elementor-sync' ), [ 'status' => 403 ] );
-		}
-
+		$post_id = $resolved['post_id'];
 		$post = get_post( $post_id );
 		if ( ! $post ) {
 			return new \WP_Error( 'post_not_found', __( 'Post not found.', 'ai-elementor-sync' ), [ 'status' => 404 ] );
 		}
-
 		if ( ! current_user_can( 'edit_post', $post_id ) ) {
 			return new \WP_Error( 'rest_forbidden', __( 'You do not have permission to edit this post.', 'ai-elementor-sync' ), [ 'status' => 403 ] );
 		}
-
 		return true;
 	}
 
 	/**
-	 * Permission callback for inspect: require auth and edit_post on resolved post (url from query).
+	 * Permission callback for inspect: require auth and edit_post on resolved post (page or template).
 	 *
 	 * @param WP_REST_Request $request Request.
 	 * @return true|WP_Error
@@ -209,15 +274,12 @@ final class Routes {
 		if ( ! is_user_logged_in() ) {
 			return new \WP_Error( 'rest_not_logged_in', __( 'Authentication required.', 'ai-elementor-sync' ), [ 'status' => 401 ] );
 		}
-		$url = $request->get_param( 'url' );
-		$url = is_string( $url ) ? trim( $url ) : '';
-		if ( $url === '' ) {
-			return new \WP_Error( 'missing_url', __( 'URL is required.', 'ai-elementor-sync' ), [ 'status' => 400 ] );
+		$params = EditTargetResolver::getTargetParamsFromRequest( $request );
+		$resolved = EditTargetResolver::fromRequest( $params );
+		if ( is_wp_error( $resolved ) ) {
+			return $resolved;
 		}
-		$post_id = UrlResolver::resolve( $url );
-		if ( $post_id === 0 ) {
-			return new \WP_Error( 'url_unresolved', __( 'URL could not be resolved.', 'ai-elementor-sync' ), [ 'status' => 403 ] );
-		}
+		$post_id = $resolved['post_id'];
 		$post = get_post( $post_id );
 		if ( ! $post ) {
 			return new \WP_Error( 'post_not_found', __( 'Post not found.', 'ai-elementor-sync' ), [ 'status' => 404 ] );
@@ -229,24 +291,21 @@ final class Routes {
 	}
 
 	/**
-	 * Permission callback for llm-edit: require auth and edit_post on resolved post (url from body).
+	 * Permission callback for llm-edit: require auth and edit_post on resolved post (page or template).
 	 *
 	 * @param WP_REST_Request $request Request.
 	 * @return true|WP_Error
 	 */
 	public static function permission_llm_edit( WP_REST_Request $request ) {
-		$params = $request->get_json_params();
-		if ( empty( $params ) ) {
-			$params = $request->get_body_params();
+		if ( ! is_user_logged_in() ) {
+			return new \WP_Error( 'rest_not_logged_in', __( 'Authentication required.', 'ai-elementor-sync' ), [ 'status' => 401 ] );
 		}
-		$url = isset( $params['url'] ) && is_string( $params['url'] ) ? trim( $params['url'] ) : '';
-		if ( $url === '' ) {
-			return new \WP_Error( 'missing_url', __( 'URL is required.', 'ai-elementor-sync' ), [ 'status' => 400 ] );
+		$params = EditTargetResolver::getTargetParamsFromRequest( $request );
+		$resolved = EditTargetResolver::fromRequest( $params );
+		if ( is_wp_error( $resolved ) ) {
+			return $resolved;
 		}
-		$post_id = UrlResolver::resolve( $url );
-		if ( $post_id === 0 ) {
-			return new \WP_Error( 'url_unresolved', __( 'URL could not be resolved.', 'ai-elementor-sync' ), [ 'status' => 403 ] );
-		}
+		$post_id = $resolved['post_id'];
 		$post = get_post( $post_id );
 		if ( ! $post ) {
 			return new \WP_Error( 'post_not_found', __( 'Post not found.', 'ai-elementor-sync' ), [ 'status' => 404 ] );
@@ -258,24 +317,21 @@ final class Routes {
 	}
 
 	/**
-	 * Permission callback for apply-edits: require auth and edit_post on resolved post (url from body).
+	 * Permission callback for apply-edits: require auth and edit_post on resolved post (page or template).
 	 *
 	 * @param WP_REST_Request $request Request.
 	 * @return true|WP_Error
 	 */
 	public static function permission_apply_edits( WP_REST_Request $request ) {
-		$params = $request->get_json_params();
-		if ( empty( $params ) ) {
-			$params = $request->get_body_params();
+		if ( ! is_user_logged_in() ) {
+			return new \WP_Error( 'rest_not_logged_in', __( 'Authentication required.', 'ai-elementor-sync' ), [ 'status' => 401 ] );
 		}
-		$url = isset( $params['url'] ) && is_string( $params['url'] ) ? trim( $params['url'] ) : '';
-		if ( $url === '' ) {
-			return new \WP_Error( 'missing_url', __( 'URL is required.', 'ai-elementor-sync' ), [ 'status' => 400 ] );
+		$params = EditTargetResolver::getTargetParamsFromRequest( $request );
+		$resolved = EditTargetResolver::fromRequest( $params );
+		if ( is_wp_error( $resolved ) ) {
+			return $resolved;
 		}
-		$post_id = UrlResolver::resolve( $url );
-		if ( $post_id === 0 ) {
-			return new \WP_Error( 'url_unresolved', __( 'URL could not be resolved.', 'ai-elementor-sync' ), [ 'status' => 403 ] );
-		}
+		$post_id = $resolved['post_id'];
 		$post = get_post( $post_id );
 		if ( ! $post ) {
 			return new \WP_Error( 'post_not_found', __( 'Post not found.', 'ai-elementor-sync' ), [ 'status' => 404 ] );

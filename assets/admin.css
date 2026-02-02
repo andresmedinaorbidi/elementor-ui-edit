@@ -11,8 +11,23 @@
 	padding: 1em 0;
 }
 
-.ai-elementor-sync-admin .ai-elementor-sync-panel.hidden {
-	display: none;
+.ai-elementor-sync-admin .ai-elementor-sync-panel.hidden,
+.ai-elementor-sync-admin .hidden {
+	display: none !important;
+}
+
+.ai-elementor-sync-admin .ai-elementor-sync-target {
+	margin-bottom: 1em;
+}
+
+.ai-elementor-sync-admin .ai-elementor-sync-target legend {
+	font-weight: 600;
+}
+
+.ai-elementor-sync-admin .ai-elementor-sync-target p label:has(input[type="radio"]) {
+	display: inline;
+	margin-right: 1em;
+	font-weight: normal;
 }
 
 .ai-elementor-sync-admin .ai-elementor-sync-form label {

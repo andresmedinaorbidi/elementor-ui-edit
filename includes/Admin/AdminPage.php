@@ -118,12 +118,25 @@ final class AdminPage {
 
 			<div id="tab-inspect" class="ai-elementor-sync-panel" role="tabpanel">
 				<h2><?php esc_html_e( 'Inspect', 'ai-elementor-sync' ); ?></h2>
-				<p><?php esc_html_e( 'Get post ID, structure, text/link fields, and image slots (Image widget + container/section background image) for a page URL. Supports heading, text-editor, button, image-box, icon-box, accordion, tabs, and more.', 'ai-elementor-sync' ); ?></p>
+				<p><?php esc_html_e( 'Get post ID, structure, text/link fields, and image slots (Image widget + container/section background image) for a page URL or an Elementor template (header, footer, etc.).', 'ai-elementor-sync' ); ?></p>
 				<form id="form-inspect" class="ai-elementor-sync-form">
-					<p>
-						<label for="inspect-url"><?php esc_html_e( 'Page URL', 'ai-elementor-sync' ); ?></label>
-						<input type="url" id="inspect-url" name="url" class="large-text" placeholder="https://example.com/page/" required />
-					</p>
+					<fieldset class="ai-elementor-sync-target">
+						<legend><?php esc_html_e( 'Target', 'ai-elementor-sync' ); ?></legend>
+						<p>
+							<label><input type="radio" name="inspect-target" value="url" checked /> <?php esc_html_e( 'Page (URL)', 'ai-elementor-sync' ); ?></label>
+							<label><input type="radio" name="inspect-target" value="template" /> <?php esc_html_e( 'Template', 'ai-elementor-sync' ); ?></label>
+						</p>
+						<p id="inspect-url-wrap">
+							<label for="inspect-url"><?php esc_html_e( 'Page URL', 'ai-elementor-sync' ); ?></label>
+							<input type="url" id="inspect-url" name="url" class="large-text" placeholder="https://example.com/page/" />
+						</p>
+						<p id="inspect-template-wrap" class="hidden">
+							<label for="inspect-template-id"><?php esc_html_e( 'Template', 'ai-elementor-sync' ); ?></label>
+							<select id="inspect-template-id" name="template_id"><option value=""><?php esc_html_e( 'Loading…', 'ai-elementor-sync' ); ?></option></select>
+							<button type="button" class="button js-retry-templates" style="display:none; margin-left: 0.5em;"><?php esc_html_e( 'Retry load templates', 'ai-elementor-sync' ); ?></button>
+						</p>
+						<p class="description"><?php esc_html_e( 'For header/footer templates, use Template and select from the dropdown (template permalinks are not resolved as page URL).', 'ai-elementor-sync' ); ?></p>
+					</fieldset>
 					<p>
 						<button type="submit" class="button button-primary"><?php esc_html_e( 'Inspect', 'ai-elementor-sync' ); ?></button>
 					</p>
@@ -133,12 +146,24 @@ final class AdminPage {
 
 			<div id="tab-replace-text" class="ai-elementor-sync-panel hidden" role="tabpanel">
 				<h2><?php esc_html_e( 'Replace text', 'ai-elementor-sync' ); ?></h2>
-				<p><?php esc_html_e( 'Find and replace text in exactly one matching widget (containment match).', 'ai-elementor-sync' ); ?></p>
+				<p><?php esc_html_e( 'Find and replace text in exactly one matching widget (containment match). Target a page by URL or an Elementor template.', 'ai-elementor-sync' ); ?></p>
 				<form id="form-replace-text" class="ai-elementor-sync-form">
-					<p>
-						<label for="replace-url"><?php esc_html_e( 'Page URL', 'ai-elementor-sync' ); ?></label>
-						<input type="url" id="replace-url" name="url" class="large-text" placeholder="https://example.com/page/" required />
-					</p>
+					<fieldset class="ai-elementor-sync-target">
+						<legend><?php esc_html_e( 'Target', 'ai-elementor-sync' ); ?></legend>
+						<p>
+							<label><input type="radio" name="replace-target" value="url" checked /> <?php esc_html_e( 'Page (URL)', 'ai-elementor-sync' ); ?></label>
+							<label><input type="radio" name="replace-target" value="template" /> <?php esc_html_e( 'Template', 'ai-elementor-sync' ); ?></label>
+						</p>
+						<p id="replace-url-wrap">
+							<label for="replace-url"><?php esc_html_e( 'Page URL', 'ai-elementor-sync' ); ?></label>
+							<input type="url" id="replace-url" name="url" class="large-text" placeholder="https://example.com/page/" />
+						</p>
+						<p id="replace-template-wrap" class="hidden">
+							<label for="replace-template-id"><?php esc_html_e( 'Template', 'ai-elementor-sync' ); ?></label>
+							<select id="replace-template-id" name="template_id"><option value=""><?php esc_html_e( 'Loading…', 'ai-elementor-sync' ); ?></option></select>
+							<button type="button" class="button js-retry-templates" style="display:none; margin-left: 0.5em;"><?php esc_html_e( 'Retry load templates', 'ai-elementor-sync' ); ?></button>
+						</p>
+					</fieldset>
 					<p>
 						<label for="replace-find"><?php esc_html_e( 'Find', 'ai-elementor-sync' ); ?></label>
 						<input type="text" id="replace-find" name="find" class="large-text" required />
@@ -156,15 +181,29 @@ final class AdminPage {
 
 			<div id="tab-llm-edit" class="ai-elementor-sync-panel hidden" role="tabpanel">
 				<h2><?php esc_html_e( 'LLM edit', 'ai-elementor-sync' ); ?></h2>
-				<p><?php esc_html_e( 'Send page text to the AI service and apply returned edits. Requires AI service URL to be configured.', 'ai-elementor-sync' ); ?></p>
+				<p><?php esc_html_e( 'Send page or template text to the AI service and apply returned edits. Use "Auto" to detect footer/header from your instruction (e.g. "In the footer, change the copyright to 2025"). Requires AI service URL.', 'ai-elementor-sync' ); ?></p>
 				<form id="form-llm-edit" class="ai-elementor-sync-form">
-					<p>
-						<label for="llm-url"><?php esc_html_e( 'Page URL', 'ai-elementor-sync' ); ?></label>
-						<input type="url" id="llm-url" name="url" class="large-text" placeholder="https://example.com/page/" required />
-					</p>
+					<fieldset class="ai-elementor-sync-target">
+						<legend><?php esc_html_e( 'Target', 'ai-elementor-sync' ); ?></legend>
+						<p>
+							<label><input type="radio" name="llm-target" value="url" checked /> <?php esc_html_e( 'Page (URL)', 'ai-elementor-sync' ); ?></label>
+							<label><input type="radio" name="llm-target" value="template" /> <?php esc_html_e( 'Template', 'ai-elementor-sync' ); ?></label>
+							<label><input type="radio" name="llm-target" value="auto" /> <?php esc_html_e( 'Auto (footer/header from instruction)', 'ai-elementor-sync' ); ?></label>
+						</p>
+						<p id="llm-url-wrap">
+							<label for="llm-url"><?php esc_html_e( 'Page URL', 'ai-elementor-sync' ); ?></label>
+							<input type="url" id="llm-url" name="url" class="large-text" placeholder="https://example.com/page/" />
+						</p>
+						<p id="llm-template-wrap" class="hidden">
+							<label for="llm-template-id"><?php esc_html_e( 'Template', 'ai-elementor-sync' ); ?></label>
+							<select id="llm-template-id" name="template_id"><option value=""><?php esc_html_e( 'Loading…', 'ai-elementor-sync' ); ?></option></select>
+							<button type="button" class="button js-retry-templates" style="display:none; margin-left: 0.5em;"><?php esc_html_e( 'Retry load templates', 'ai-elementor-sync' ); ?></button>
+						</p>
+						<p id="llm-auto-hint" class="hidden description"><?php esc_html_e( 'No URL or template needed. Mention "footer" or "header" in your instruction; the first matching template will be used.', 'ai-elementor-sync' ); ?></p>
+					</fieldset>
 					<p>
 						<label for="llm-instruction"><?php esc_html_e( 'Instruction', 'ai-elementor-sync' ); ?></label>
-						<textarea id="llm-instruction" name="instruction" class="large-text" rows="4" required></textarea>
+						<textarea id="llm-instruction" name="instruction" class="large-text" rows="4" required placeholder="<?php esc_attr_e( 'e.g. Change the copyright year to 2025', 'ai-elementor-sync' ); ?>"></textarea>
 					</p>
 					<p>
 						<button type="submit" class="button button-primary"><?php esc_html_e( 'LLM edit', 'ai-elementor-sync' ); ?></button>
@@ -175,12 +214,25 @@ final class AdminPage {
 
 			<div id="tab-apply-edits" class="ai-elementor-sync-panel hidden" role="tabpanel">
 				<h2><?php esc_html_e( 'Apply edits', 'ai-elementor-sync' ); ?></h2>
-				<p><?php esc_html_e( 'Apply edits directly (no AI). Each edit: id or path; new_text or new_url/new_link (text/URL); or new_image_url/new_attachment_id (image/background). Optional field and item_index for text/URL slots.', 'ai-elementor-sync' ); ?></p>
+				<p><?php esc_html_e( 'Apply edits directly (no AI). Target a page by URL or an Elementor template. Each edit: id or path; new_text or new_url/new_link (text/URL); or new_image_url/new_attachment_id (image/background).', 'ai-elementor-sync' ); ?></p>
 				<form id="form-apply-edits" class="ai-elementor-sync-form">
-					<p>
-						<label for="apply-url"><?php esc_html_e( 'Page URL', 'ai-elementor-sync' ); ?></label>
-						<input type="url" id="apply-url" name="url" class="large-text" placeholder="https://example.com/page/" required />
-					</p>
+					<fieldset class="ai-elementor-sync-target">
+						<legend><?php esc_html_e( 'Target', 'ai-elementor-sync' ); ?></legend>
+						<p>
+							<label><input type="radio" name="apply-target" value="url" checked /> <?php esc_html_e( 'Page (URL)', 'ai-elementor-sync' ); ?></label>
+							<label><input type="radio" name="apply-target" value="template" /> <?php esc_html_e( 'Template', 'ai-elementor-sync' ); ?></label>
+						</p>
+						<p id="apply-url-wrap">
+							<label for="apply-url"><?php esc_html_e( 'Page URL', 'ai-elementor-sync' ); ?></label>
+							<input type="url" id="apply-url" name="url" class="large-text" placeholder="https://example.com/page/" />
+						</p>
+						<p id="apply-template-wrap" class="hidden">
+							<label for="apply-template-id"><?php esc_html_e( 'Template', 'ai-elementor-sync' ); ?></label>
+							<select id="apply-template-id" name="template_id"><option value=""><?php esc_html_e( 'Loading…', 'ai-elementor-sync' ); ?></option></select>
+							<button type="button" class="button js-retry-templates" style="display:none; margin-left: 0.5em;"><?php esc_html_e( 'Retry load templates', 'ai-elementor-sync' ); ?></button>
+						</p>
+					</fieldset>
+					<p class="description" style="margin-top: -0.5em;"><?php esc_html_e( 'For header/footer, use Template and select from the dropdown (template permalinks are not resolved as page URL).', 'ai-elementor-sync' ); ?></p>
 					<p>
 						<label for="apply-edits"><?php esc_html_e( 'Edits (JSON array)', 'ai-elementor-sync' ); ?></label>
 						<textarea id="apply-edits" name="edits" class="large-text code" rows="8" placeholder='[{"id":"abc123","new_text":"Hello"},{"path":"0/1/2","new_image_url":"https://example.com/image.jpg"},{"id":"img1","new_attachment_id":42}]' required></textarea>

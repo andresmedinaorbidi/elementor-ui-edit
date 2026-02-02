@@ -5,9 +5,9 @@ declare(strict_types=1);
 namespace AiElementorSync\Rest\Controllers;
 
 use AiElementorSync\Services\CacheRegenerator;
+use AiElementorSync\Services\EditTargetResolver;
 use AiElementorSync\Services\ElementorDataStore;
 use AiElementorSync\Services\ElementorTraverser;
-use AiElementorSync\Services\UrlResolver;
 use AiElementorSync\Support\Errors;
 use AiElementorSync\Support\Logger;
 use WP_REST_Request;
@@ -29,20 +29,22 @@ final class ReplaceTextController {
 		if ( empty( $params ) ) {
 			$params = $request->get_body_params();
 		}
-		$url = isset( $params['url'] ) && is_string( $params['url'] ) ? trim( $params['url'] ) : '';
 		$find = isset( $params['find'] ) && is_string( $params['find'] ) ? $params['find'] : null;
 		$replace = array_key_exists( 'replace', $params ) && is_string( $params['replace'] ) ? $params['replace'] : null;
 		$widget_types = isset( $params['widget_types'] ) && is_array( $params['widget_types'] ) ? $params['widget_types'] : ElementorTraverser::DEFAULT_WIDGET_TYPES;
 
-		if ( $url === '' || $find === null || $replace === null ) {
-			return Errors::error_response( 'Missing required parameters: url, find, replace.', 0, 400 );
+		if ( $find === null || $replace === null ) {
+			return Errors::error_response( 'Missing required parameters: find, replace. Provide one of url, template_id, or document_type.', 0, 400 );
 		}
 
-		$post_id = UrlResolver::resolve( $url );
-		if ( $post_id === 0 ) {
-			Logger::log( 'URL could not be resolved', [ 'url' => $url ] );
-			return Errors::error_response( 'URL could not be resolved', 0, 400 );
+		$target_params = EditTargetResolver::getTargetParamsFromRequest( $request );
+		$resolved = EditTargetResolver::fromRequest( $target_params );
+		if ( is_wp_error( $resolved ) ) {
+			$code = $resolved->get_error_code();
+			$status = $resolved->get_error_data()['status'] ?? 400;
+			return Errors::error_response( $resolved->get_error_message(), 0, $status );
 		}
+		$post_id = $resolved['post_id'];
 
 		$post = get_post( $post_id );
 		if ( ! $post ) {
@@ -92,16 +94,14 @@ final class ReplaceTextController {
 	 * @return WP_REST_Response
 	 */
 	public static function inspect( WP_REST_Request $request ): WP_REST_Response {
-		$url = $request->get_param( 'url' );
-		$url = is_string( $url ) ? trim( $url ) : '';
-		if ( $url === '' ) {
-			return Errors::error_response( 'Missing required parameter: url.', 0, 400 );
+		$target_params = EditTargetResolver::getTargetParamsFromRequest( $request );
+		$resolved = EditTargetResolver::fromRequest( $target_params );
+		if ( is_wp_error( $resolved ) ) {
+			$status = $resolved->get_error_data()['status'] ?? 400;
+			return Errors::error_response( $resolved->get_error_message(), 0, $status );
 		}
+		$post_id = $resolved['post_id'];
 
-		$post_id = UrlResolver::resolve( $url );
-		if ( $post_id === 0 ) {
-			return Errors::error_response( 'URL could not be resolved', 0, 400 );
-		}
 		if ( ! current_user_can( 'edit_post', $post_id ) ) {
 			return Errors::forbidden( 'You do not have permission to edit this post.', $post_id );
 		}

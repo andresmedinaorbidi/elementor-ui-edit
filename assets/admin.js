@@ -10,6 +10,8 @@
 	const nonce = config.nonce || '';
 	const siteUrl = config.site_url || '';
 
+	var templatesCache = [];
+
 	// #region agent log — in WordPress open DevTools (F12) → Console to see these
 	function logToDebug( message, data ) {
 		if ( typeof console !== 'undefined' && console.warn ) {
@@ -96,6 +98,134 @@
 		html += '<div class="ai-elementor-sync-inspect-full"><h3 class="ai-elementor-sync-result-heading">Full response</h3>';
 		html += renderJson( data ) + '</div>';
 		return html;
+	}
+
+	// Load Elementor templates (list-templates) and populate all template dropdowns
+	function loadTemplates() {
+		var url = restUrl + '/list-templates';
+		fetch( url, {
+			method: 'GET',
+			headers: getHeaders( false ),
+			credentials: 'same-origin',
+		} )
+			.then( function ( res ) {
+				return responseToJson( res ).then( function ( data ) {
+					return { ok: res.ok, status: res.status, data: data };
+				} );
+			} )
+			.then( function ( result ) {
+				var list = result.data;
+				if ( ! result.ok || ! list ) {
+					templatesCache = [];
+					setTemplateSelectOptions( 'Failed to load templates (log in or refresh).', true );
+					return;
+				}
+				// Unwrap if REST returned { data: [...] } or use array as-is
+				if ( ! Array.isArray( list ) && list && Array.isArray( list.data ) ) {
+					list = list.data;
+				}
+				templatesCache = Array.isArray( list ) ? list : [];
+				if ( templatesCache.length === 0 ) {
+					setTemplateSelectOptions( 'No templates found. Create header/footer in Elementor Theme Builder.', false );
+				} else {
+					var options = '<option value="">— Select template —</option>' +
+						templatesCache.map( function ( t ) {
+							return '<option value="' + escapeHtml( String( t.id ) ) + '">' + escapeHtml( ( t.name || '' ) + ' (' + ( t.document_type || '' ) + ')' ) + '</option>';
+						} ).join( '' );
+					[ 'inspect', 'replace', 'llm', 'apply' ].forEach( function ( prefix ) {
+						var sel = document.getElementById( prefix + '-template-id' );
+						if ( sel ) sel.innerHTML = options;
+					} );
+				}
+			} )
+			.catch( function ( err ) {
+				templatesCache = [];
+				setTemplateSelectOptions( 'Failed to load templates. Retry below.', true );
+				logToDebug( 'list-templates failed', { error: ( err && err.message ) || String( err ) } );
+			} );
+	}
+
+	function setTemplateSelectOptions( message, isError ) {
+		var opt = '<option value="">' + escapeHtml( message ) + '</option>';
+		[ 'inspect', 'replace', 'llm', 'apply' ].forEach( function ( prefix ) {
+			var sel = document.getElementById( prefix + '-template-id' );
+			if ( sel ) sel.innerHTML = opt;
+		} );
+		// Show/hide retry buttons when load failed
+		document.querySelectorAll( '.js-retry-templates' ).forEach( function ( el ) {
+			el.style.display = isError ? 'inline-block' : 'none';
+		} );
+	}
+
+	// Build target payload for API: { url } or { template_id }. prefix = 'inspect'|'replace'|'llm'|'apply'
+	function getTargetPayload( prefix ) {
+		var target = ( document.querySelector( 'input[name="' + prefix + '-target"]:checked' ) || {} ).value;
+		if ( target === 'template' ) {
+			var sel = document.getElementById( prefix + '-template-id' );
+			var id = sel ? parseInt( sel.value, 10 ) : 0;
+			if ( id > 0 ) return { template_id: id };
+			return null;
+		}
+		if ( target === 'url' ) {
+			var urlEl = document.getElementById( prefix + '-url' );
+			var url = urlEl ? ( urlEl.value || '' ).trim() : '';
+			if ( url ) return { url: url };
+			return null;
+		}
+		// llm only: 'auto' — resolved in initLlmEdit using instruction
+		return null;
+	}
+
+	// Detect document_type from instruction text for "Auto" target (footer, header, single)
+	function detectDocumentTypeFromInstruction( instruction ) {
+		if ( ! instruction || typeof instruction !== 'string' ) return null;
+		var lower = instruction.toLowerCase();
+		if ( /\bfooter\b/.test( lower ) ) return 'footer';
+		if ( /\bheader\b/.test( lower ) ) return 'header';
+		if ( /\bsingle\b/.test( lower ) ) return 'single';
+		if ( /\bpage\b/.test( lower ) ) return 'page';
+		return null;
+	}
+
+	// Set visibility of URL / template / auto hint from current target radio. prefix = inspect|replace|llm|apply, hasAuto = whether form has Auto option
+	function setTargetVisibility( prefix, hasAuto ) {
+		var checked = document.querySelector( 'input[name="' + prefix + '-target"]:checked' );
+		var v = checked ? checked.value : 'url';
+		var urlWrap = document.getElementById( prefix + '-url-wrap' );
+		var templateWrap = document.getElementById( prefix + '-template-wrap' );
+		var autoHint = hasAuto ? document.getElementById( prefix + '-auto-hint' ) : null;
+		if ( urlWrap ) urlWrap.classList.toggle( 'hidden', v !== 'url' );
+		if ( templateWrap ) templateWrap.classList.toggle( 'hidden', v !== 'template' );
+		if ( autoHint ) autoHint.classList.toggle( 'hidden', v !== 'auto' );
+		// When Auto is selected, URL is not needed; ensure URL input is not required
+		var urlInput = document.getElementById( prefix + '-url' );
+		if ( urlInput ) urlInput.removeAttribute( 'required' );
+	}
+
+	// Toggle URL vs template wrap when target radio changes
+	function initTargetToggles() {
+		function toggle( prefix, hasAuto ) {
+			var urlWrap = document.getElementById( prefix + '-url-wrap' );
+			var templateWrap = document.getElementById( prefix + '-template-wrap' );
+			var autoHint = hasAuto ? document.getElementById( prefix + '-auto-hint' ) : null;
+			var radios = document.querySelectorAll( 'input[name="' + prefix + '-target"]' );
+			radios.forEach( function ( radio ) {
+				radio.addEventListener( 'change', function () {
+					var v = this.value;
+					if ( urlWrap ) urlWrap.classList.toggle( 'hidden', v !== 'url' );
+					if ( templateWrap ) templateWrap.classList.toggle( 'hidden', v !== 'template' );
+					if ( autoHint ) autoHint.classList.toggle( 'hidden', v !== 'auto' );
+					var urlInput = document.getElementById( prefix + '-url' );
+					if ( urlInput ) urlInput.removeAttribute( 'required' );
+				} );
+			} );
+			// Set initial visibility from current checked radio
+			setTargetVisibility( prefix, hasAuto );
+		}
+		toggle( 'inspect', false );
+		toggle( 'replace', false );
+		toggle( 'llm', true );
+		toggle( 'apply', false );
 	}
 
 	// Tab switching (optional onShow callback for tab name)
@@ -241,16 +371,20 @@
 		}
 	}
 
-	// Inspect: GET ?url=...
+	// Inspect: GET ?url=... or ?template_id=...
 	function initInspect() {
 		const form = document.getElementById( 'form-inspect' );
 		if ( ! form ) return;
 		form.addEventListener( 'submit', function ( e ) {
 			e.preventDefault();
-			const url = ( document.getElementById( 'inspect-url' ) || {} ).value?.trim();
-			if ( ! url ) return;
+			const payload = getTargetPayload( 'inspect' );
+			if ( ! payload ) {
+				setResult( 'result-inspect', '<p class="error">Choose Page (URL) and enter a URL, or choose Template and select a template.</p>', true );
+				return;
+			}
 			setLoading( 'result-inspect' );
-			const reqUrl = restUrl + '/inspect?url=' + encodeURIComponent( url );
+			const params = new URLSearchParams( payload );
+			const reqUrl = restUrl + '/inspect?' + params.toString();
 			logToDebug( 'fetch start', { url: reqUrl, restUrl: restUrl }, 'C' );
 			fetch( reqUrl, {
 				method: 'GET',
@@ -272,23 +406,27 @@
 		} );
 	}
 
-	// Replace text: POST JSON { url, find, replace }
+	// Replace text: POST JSON { url or template_id, find, replace }
 	function initReplaceText() {
 		const form = document.getElementById( 'form-replace-text' );
 		if ( ! form ) return;
 		form.addEventListener( 'submit', function ( e ) {
 			e.preventDefault();
-			const url = ( document.getElementById( 'replace-url' ) || {} ).value?.trim();
+			const payload = getTargetPayload( 'replace' );
 			const find = ( document.getElementById( 'replace-find' ) || {} ).value;
 			const replace = ( document.getElementById( 'replace-replace' ) || {} ).value;
-			if ( ! url || find === undefined || replace === undefined ) return;
+			if ( ! payload || find === undefined || replace === undefined ) {
+				setResult( 'result-replace-text', '<p class="error">Choose Page (URL) and enter a URL, or choose Template and select a template. Enter Find and Replace.</p>', true );
+				return;
+			}
 			setLoading( 'result-replace-text' );
+			const body = Object.assign( {}, payload, { find: find, replace: replace } );
 			logToDebug( 'fetch start', { url: restUrl + '/replace-text' }, 'C' );
 			fetch( restUrl + '/replace-text', {
 				method: 'POST',
 				headers: getHeaders( true ),
 				credentials: 'same-origin',
-				body: JSON.stringify( { url, find, replace } ),
+				body: JSON.stringify( body ),
 			} )
 				.then( function ( res ) {
 					return responseToJson( res ).then( function ( data ) {
@@ -304,35 +442,76 @@
 		} );
 	}
 
-	// LLM edit: POST JSON { url, instruction }
+	// LLM edit: POST JSON { url or template_id, instruction }. If target=auto, detect footer/header from instruction and use first matching template.
 	function initLlmEdit() {
 		const form = document.getElementById( 'form-llm-edit' );
 		if ( ! form ) return;
 		form.addEventListener( 'submit', function ( e ) {
 			e.preventDefault();
-			const url = ( document.getElementById( 'llm-url' ) || {} ).value?.trim();
 			const instruction = ( document.getElementById( 'llm-instruction' ) || {} ).value;
-			if ( ! url || instruction === undefined ) return;
-			setLoading( 'result-llm-edit' );
-			logToDebug( 'fetch start', { url: restUrl + '/llm-edit' }, 'C' );
-			fetch( restUrl + '/llm-edit', {
-				method: 'POST',
-				headers: getHeaders( true ),
-				credentials: 'same-origin',
-				body: JSON.stringify( { url, instruction } ),
-			} )
-				.then( function ( res ) {
-					return responseToJson( res ).then( function ( data ) {
-						return { ok: res.ok, status: res.status, data: data };
-					} );
-				} )
-				.then( function ( result ) {
-					const content = renderLlmEditResult( result.data );
-					setResult( 'result-llm-edit', content, ! result.ok );
-				} )
-				.catch( function ( err ) {
-					setResult( 'result-llm-edit', '<pre>' + ( err.message || String( err ) ) + '</pre>', true );
+			if ( instruction === undefined || ( instruction || '' ).trim() === '' ) {
+				setResult( 'result-llm-edit', '<p class="error">Enter an instruction.</p>', true );
+				return;
+			}
+			var target = ( document.querySelector( 'input[name="llm-target"]:checked' ) || {} ).value;
+			var payloadPromise;
+			if ( target === 'auto' ) {
+				var docType = detectDocumentTypeFromInstruction( instruction );
+				if ( ! docType ) {
+					setResult( 'result-llm-edit', '<p class="error">Auto target: mention "footer", "header", "single", or "page" in your instruction (e.g. "In the footer, change the copyright to 2025").</p>', true );
+					return;
+				}
+				setLoading( 'result-llm-edit' );
+				payloadPromise = templatesCache.length > 0
+					? Promise.resolve( templatesCache )
+					: fetch( restUrl + '/list-templates', { method: 'GET', headers: getHeaders( false ), credentials: 'same-origin' } )
+						.then( function ( res ) { return responseToJson( res ); } )
+						.then( function ( list ) {
+							templatesCache = Array.isArray( list ) ? list : [];
+							return templatesCache;
+						} );
+				payloadPromise = payloadPromise.then( function ( list ) {
+					var first = list.filter( function ( t ) { return ( t.document_type || '' ) === docType; } )[ 0 ];
+					if ( ! first ) return null;
+					return { template_id: first.id };
 				} );
+			} else {
+				var manual = getTargetPayload( 'llm' );
+				if ( ! manual ) {
+					setResult( 'result-llm-edit', '<p class="error">Choose Page (URL) and enter a URL, or choose Template and select a template.</p>', true );
+					return;
+				}
+				setLoading( 'result-llm-edit' );
+				payloadPromise = Promise.resolve( manual );
+			}
+			payloadPromise.then( function ( payload ) {
+				if ( ! payload ) {
+					setResult( 'result-llm-edit', '<p class="error">No template found for that type. Create a ' + docType + ' template in Elementor Theme Builder.</p>', true );
+					return;
+				}
+				var body = Object.assign( {}, payload, { instruction: instruction } );
+				logToDebug( 'fetch start', { url: restUrl + '/llm-edit', target: target }, 'C' );
+				return fetch( restUrl + '/llm-edit', {
+					method: 'POST',
+					headers: getHeaders( true ),
+					credentials: 'same-origin',
+					body: JSON.stringify( body ),
+				} )
+					.then( function ( res ) {
+						return responseToJson( res ).then( function ( data ) {
+							return { ok: res.ok, status: res.status, data: data };
+						} );
+					} )
+					.then( function ( result ) {
+						var content = renderLlmEditResult( result.data );
+						setResult( 'result-llm-edit', content, ! result.ok );
+					} )
+					.catch( function ( err ) {
+						setResult( 'result-llm-edit', '<pre>' + ( err.message || String( err ) ) + '</pre>', true );
+					} );
+			} ).catch( function ( err ) {
+				setResult( 'result-llm-edit', '<pre>' + ( err.message || String( err ) ) + '</pre>', true );
+			} );
 		} );
 	}
 
@@ -374,15 +553,22 @@
 		return html;
 	}
 
-	// Apply edits: POST JSON { url, edits }
+	// Apply edits: POST JSON { url or template_id, edits }
 	function initApplyEdits() {
 		const form = document.getElementById( 'form-apply-edits' );
 		if ( ! form ) return;
 		form.addEventListener( 'submit', function ( e ) {
 			e.preventDefault();
-			const url = ( document.getElementById( 'apply-url' ) || {} ).value?.trim();
+			const payload = getTargetPayload( 'apply' );
 			let editsRaw = ( document.getElementById( 'apply-edits' ) || {} ).value?.trim();
-			if ( ! url || ! editsRaw ) return;
+			if ( ! payload ) {
+				setResult( 'result-apply-edits', '<p class="error">Choose Page (URL) and enter a URL, or choose Template and select a template.</p>', true );
+				return;
+			}
+			if ( ! editsRaw ) {
+				setResult( 'result-apply-edits', '<p class="error">Enter edits (JSON array).</p>', true );
+				return;
+			}
 			let edits;
 			try {
 				edits = JSON.parse( editsRaw );
@@ -395,12 +581,13 @@
 				return;
 			}
 			setLoading( 'result-apply-edits' );
+			const body = Object.assign( {}, payload, { edits: edits } );
 			logToDebug( 'fetch start', { url: restUrl + '/apply-edits' }, 'C' );
 			fetch( restUrl + '/apply-edits', {
 				method: 'POST',
 				headers: getHeaders( true ),
 				credentials: 'same-origin',
-				body: JSON.stringify( { url, edits } ),
+				body: JSON.stringify( body ),
 			} )
 				.then( function ( res ) {
 					return responseToJson( res ).then( function ( data ) {
@@ -540,6 +727,11 @@
 		initTabs( function ( tabName ) {
 			if ( tabName === 'settings' ) loadSettings();
 			if ( tabName === 'log' ) loadLog();
+		} );
+		loadTemplates();
+		initTargetToggles();
+		document.querySelectorAll( '.js-retry-templates' ).forEach( function ( el ) {
+			el.addEventListener( 'click', function () { loadTemplates(); } );
 		} );
 		initInspect();
 		initReplaceText();
