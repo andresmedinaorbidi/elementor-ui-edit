@@ -48,7 +48,10 @@ The AI may return **edits** with:
 
 Each edit must have `id` or `path` to identify the slot.
 
+**Kit (theme) edits:** When the user selects target **Kit (Theme)**, the plugin sends a different body to the same AI service URL: `context_type: 'kit'`, `kit_settings: { colors, typography }`, and `instruction`. The service must return **`kit_patch`** (object with optional `colors` and `typography` arrays) instead of `edits`. See **`docs/LLM-SERVICE-KIT-EDITS.md`** for the full request/response contract so your LLM app can support theme (global colors and fonts) edits.
+
 ## Documentation
 
-- `SYSTEM_ARTIFACT.md` ? High-level system reference for humans and LLMs.
-- `AI_SERVICE.md` ? How to build the external AI edit service and its API contract.
+- `SYSTEM_ARTIFACT.md` — High-level system reference for humans and LLMs.
+- `AI_SERVICE.md` — How to build the external AI edit service and its API contract (page/template edits).
+- `docs/LLM-SERVICE-KIT-EDITS.md` — **Kit (theme) edits:** request/response format for global colors and typography so your LLM service can support the "Kit (Theme)" target and avoid 502/unknown request.

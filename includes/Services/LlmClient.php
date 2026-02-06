@@ -134,6 +134,87 @@ final class LlmClient {
 	}
 
 	/**
+	 * Request kit edits from the external service: send kit_settings + instruction, expect { kit_patch }.
+	 * Body: context_type: 'kit', kit_settings: { colors, typography }, instruction.
+	 * Response: kit_patch (or kit_edits / patch) — object with optional colors, typography, settings.
+	 *
+	 * @param array  $kit_settings Current kit settings: { colors: array, typography: array }.
+	 * @param string $instruction User instruction (natural language).
+	 * @return array{ kit_patch: array, error: string|null }
+	 */
+	public static function requestKitEdits( array $kit_settings, string $instruction ): array {
+		$url = self::get_service_url();
+		if ( $url === '' ) {
+			Logger::log( 'AI edit service not configured: missing service URL.' );
+			Logger::log_ui( 'error', 'AI edit service not configured: missing service URL.', [] );
+			return [ 'kit_patch' => [], 'error' => 'AI edit service not configured.' ];
+		}
+
+		$body = [
+			'context_type'  => 'kit',
+			'kit_settings'  => $kit_settings,
+			'instruction'  => $instruction,
+		];
+
+		Logger::log_ui( 'request', 'LLM kit edit request', [
+			'url'            => $url,
+			'instruction_len' => strlen( $instruction ),
+		] );
+
+		$response = wp_remote_post(
+			$url,
+			[
+				'timeout' => self::get_timeout(),
+				'headers' => [
+					'Content-Type' => 'application/json',
+				],
+				'body'    => wp_json_encode( $body ),
+			]
+		);
+
+		if ( is_wp_error( $response ) ) {
+			$err_msg = $response->get_error_message();
+			Logger::log( 'AI edit service request failed (kit)', [ 'error' => $err_msg ] );
+			Logger::log_ui( 'error', 'LLM kit request failed', [ 'error' => $err_msg ] );
+			return [ 'kit_patch' => [], 'error' => 'AI edit service request failed.' ];
+		}
+
+		$code = wp_remote_retrieve_response_code( $response );
+		if ( $code < 200 || $code >= 300 ) {
+			Logger::log( 'AI edit service returned non-2xx (kit)', [ 'code' => $code ] );
+			$raw_body = wp_remote_retrieve_body( $response );
+			$snippet = strlen( $raw_body ) > 200 ? substr( $raw_body, 0, 200 ) . '...' : $raw_body;
+			Logger::log_ui( 'error', 'LLM kit response non-2xx', [ 'code' => $code, 'body_snippet' => $snippet ] );
+			return [ 'kit_patch' => [], 'error' => 'AI edit service response invalid.' ];
+		}
+
+		$raw_body = wp_remote_retrieve_body( $response );
+		$decoded  = json_decode( $raw_body, true );
+		if ( ! is_array( $decoded ) ) {
+			Logger::log( 'AI edit service response body is not valid JSON (kit).' );
+			Logger::log_ui( 'error', 'LLM kit response invalid JSON', [ 'body_snippet' => strlen( $raw_body ) > 200 ? substr( $raw_body, 0, 200 ) . '...' : $raw_body ] );
+			return [ 'kit_patch' => [], 'error' => 'AI edit service response invalid.' ];
+		}
+
+		if ( isset( $decoded['error'] ) && is_string( $decoded['error'] ) && $decoded['error'] !== '' ) {
+			Logger::log( 'AI edit service returned error (kit)', [ 'message' => $decoded['error'] ] );
+			Logger::log_ui( 'error', 'LLM kit service returned error', [ 'message' => $decoded['error'] ] );
+			return [ 'kit_patch' => [], 'error' => $decoded['error'] ];
+		}
+
+		$kit_patch = $decoded['kit_patch'] ?? $decoded['kit_edits'] ?? $decoded['patch'] ?? null;
+		if ( ! is_array( $kit_patch ) ) {
+			Logger::log_ui( 'response', 'LLM kit response: kit_patch missing or not object', [
+				'response_keys' => array_keys( $decoded ),
+			] );
+			return [ 'kit_patch' => [], 'error' => null ];
+		}
+
+		Logger::log_ui( 'response', 'LLM kit response OK', [ 'kit_patch_keys' => array_keys( $kit_patch ) ] );
+		return [ 'kit_patch' => $kit_patch, 'error' => null ];
+	}
+
+	/**
 	 * Normalize and validate edits: each item must have at least one of id or path, and at least one of new_text, new_url/new_link, or new_image_url/new_attachment_id/new_image.
 	 * Passes through field, item_index; sets type (text, url, image) so apply_edits_to_data branches correctly.
 	 *

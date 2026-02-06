@@ -111,6 +111,7 @@ final class AdminPage {
 				<button type="button" class="nav-tab" role="tab" data-tab="replace-text"><?php esc_html_e( 'Replace text', 'ai-elementor-sync' ); ?></button>
 				<button type="button" class="nav-tab" role="tab" data-tab="llm-edit"><?php esc_html_e( 'LLM edit', 'ai-elementor-sync' ); ?></button>
 				<button type="button" class="nav-tab" role="tab" data-tab="apply-edits"><?php esc_html_e( 'Apply edits', 'ai-elementor-sync' ); ?></button>
+				<button type="button" class="nav-tab" role="tab" data-tab="theme"><?php esc_html_e( 'Theme', 'ai-elementor-sync' ); ?></button>
 				<button type="button" class="nav-tab" role="tab" data-tab="app-password"><?php esc_html_e( 'Application password', 'ai-elementor-sync' ); ?></button>
 				<button type="button" class="nav-tab" role="tab" data-tab="settings"><?php esc_html_e( 'Settings', 'ai-elementor-sync' ); ?></button>
 				<button type="button" class="nav-tab" role="tab" data-tab="log"><?php esc_html_e( 'Log', 'ai-elementor-sync' ); ?></button>
@@ -189,6 +190,7 @@ final class AdminPage {
 							<label><input type="radio" name="llm-target" value="url" checked /> <?php esc_html_e( 'Page (URL)', 'ai-elementor-sync' ); ?></label>
 							<label><input type="radio" name="llm-target" value="template" /> <?php esc_html_e( 'Template', 'ai-elementor-sync' ); ?></label>
 							<label><input type="radio" name="llm-target" value="auto" /> <?php esc_html_e( 'Auto (footer/header from instruction)', 'ai-elementor-sync' ); ?></label>
+							<label><input type="radio" name="llm-target" value="kit" /> <?php esc_html_e( 'Kit (Theme)', 'ai-elementor-sync' ); ?></label>
 						</p>
 						<p id="llm-url-wrap">
 							<label for="llm-url"><?php esc_html_e( 'Page URL', 'ai-elementor-sync' ); ?></label>
@@ -200,6 +202,7 @@ final class AdminPage {
 							<button type="button" class="button js-retry-templates" style="display:none; margin-left: 0.5em;"><?php esc_html_e( 'Retry load templates', 'ai-elementor-sync' ); ?></button>
 						</p>
 						<p id="llm-auto-hint" class="hidden description"><?php esc_html_e( 'No URL or template needed. Mention "footer" or "header" in your instruction; the first matching template will be used.', 'ai-elementor-sync' ); ?></p>
+						<p id="llm-kit-hint" class="hidden description"><?php esc_html_e( 'Edit global colors and typography. No URL or template.', 'ai-elementor-sync' ); ?></p>
 					</fieldset>
 					<p>
 						<label for="llm-instruction"><?php esc_html_e( 'Instruction', 'ai-elementor-sync' ); ?></label>
@@ -241,6 +244,32 @@ final class AdminPage {
 						<button type="submit" class="button button-primary"><?php esc_html_e( 'Apply edits', 'ai-elementor-sync' ); ?></button>
 					</p>
 					<div id="result-apply-edits" class="ai-elementor-sync-result" aria-live="polite"></div>
+				</form>
+			</div>
+
+			<div id="tab-theme" class="ai-elementor-sync-panel hidden" role="tabpanel">
+				<h2><?php esc_html_e( 'Theme', 'ai-elementor-sync' ); ?></h2>
+				<p><?php esc_html_e( 'View and edit the active Elementor Kit global colors and typography. No page URL or template — applies site-wide.', 'ai-elementor-sync' ); ?></p>
+				<p>
+					<button type="button" id="btn-load-kit-settings" class="button button-primary"><?php esc_html_e( 'Load kit settings', 'ai-elementor-sync' ); ?></button>
+					<button type="button" id="btn-test-kit-settings" class="button" data-test-kit="1" onclick="if(window.aiElementorSyncTestKit){window.aiElementorSyncTestKit();} return false;"><?php esc_html_e( 'Test kit connection', 'ai-elementor-sync' ); ?></button>
+					<span class="description" style="margin-left: 0.5em;"><?php esc_html_e( 'Test: verifies the plugin can read Elementor theme settings (GET kit-settings).', 'ai-elementor-sync' ); ?></span>
+				</p>
+				<div id="result-kit-test" class="ai-elementor-sync-result" aria-live="polite" style="margin-top: 0.5em; min-height: 2em;"></div>
+				<div id="result-kit-settings" class="ai-elementor-sync-result" aria-live="polite"></div>
+				<p>
+					<button type="button" id="btn-save-direct-edits" class="button"><?php esc_html_e( 'Save direct edits', 'ai-elementor-sync' ); ?></button>
+					<span class="description"><?php esc_html_e( 'Save changes from the color and font controls in the tables above.', 'ai-elementor-sync' ); ?></span>
+				</p>
+				<form id="form-theme" class="ai-elementor-sync-form">
+					<p>
+						<label for="theme-patch-json"><?php esc_html_e( 'Patch (JSON)', 'ai-elementor-sync' ); ?></label>
+						<textarea id="theme-patch-json" name="patch" class="large-text code" rows="6" placeholder='{"colors": [...]} or {"typography": [...]} or {"settings": {"system_colors": [...]}}'></textarea>
+						<span class="description"><?php esc_html_e( 'Partial JSON to merge into kit settings. Use colors, typography, or settings keys.', 'ai-elementor-sync' ); ?></span>
+					</p>
+					<p>
+						<button type="submit" id="btn-save-kit-patch" class="button button-primary"><?php esc_html_e( 'Save patch', 'ai-elementor-sync' ); ?></button>
+					</p>
 				</form>
 			</div>
 

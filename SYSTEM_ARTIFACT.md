@@ -6,7 +6,7 @@
 ## 1. Overview
 
 ### 1.1 Purpose
-This system enables **text replacement** and **natural-language edits via an external AI service** in Elementor page content via a REST API keyed by page URL. Supported widgets include **heading**, **text-editor**, **button**, **icon**, **image-box**, **icon-box**, **testimonial**, **counter**, **animated-headline**, **flip-box**, **icon-list**, **accordion**, **tabs**, **price-list**, **price-table**. Each widget can expose multiple text fields and optional link/URL; repeater widgets expose per-item text and link. **Image widget** and **container/section background image** are exposed as **image slots** (Inspect returns `image_slots`; apply-edits accept **new_image_url** and/or **new_attachment_id**). Find/replace uses **substring (containment)** match and is applied only when **exactly one** slot contains the find. Apply-edits accept **new_text**, **new_url**/new_link, or **new_image_url**/new_attachment_id (or **new_image**: { url?, id? }), with optional **field** and **item_index** for text/URL slots. Widget-elements are identified by Elementor's stable **`id`** or index **path**. The plugin calls a **single external AI edit service URL** (your proxy); no API key or model is stored in WordPress.
+This system enables **text replacement** and **natural-language edits via an external AI service** in Elementor page content via a REST API keyed by page URL. Supported widgets include **heading**, **text-editor**, **button**, **icon**, **image-box**, **icon-box**, **testimonial**, **counter**, **animated-headline**, **flip-box**, **icon-list**, **accordion**, **tabs**, **price-list**, **price-table**. Each widget can expose multiple text fields and optional link/URL; repeater widgets expose per-item text and link. **Image widget** and **container/section background image** are exposed as **image slots** (Inspect returns `image_slots`; apply-edits accept **new_image_url** and/or **new_attachment_id**). Find/replace uses **substring (containment)** match and is applied only when **exactly one** slot contains the find. Apply-edits accept **new_text**, **new_url**/new_link, or **new_image_url**/new_attachment_id (or **new_image**: { url?, id? }), with optional **field** and **item_index** for text/URL slots. Widget-elements are identified by Elementor's stable **`id`** or index **path**. The plugin calls a **single external AI edit service URL** (your proxy); no API key or model is stored in WordPress. **Theme (Kit) edits:** When the user selects target **Kit (Theme)** in LLM edit, the plugin sends **kit_settings** (colors, typography) and **instruction** to the same AI service URL; the service returns **kit_patch** (colors/typography to merge). The plugin **merges by _id** (updates existing color/typography items; does not append duplicates) and copies **value** to **color** for Elementor. **Kit settings** are read/written via GET/POST **kit-settings** (active Elementor Kit page_settings: system_colors, system_typography). Admin includes a **Theme** tab: Load kit settings, Test kit connection, tables for colors/typography (from raw_settings; display uses **value** or **color**), and Save patch (JSON).
 
 ### 1.2 Non-Goals
 * Does not handle authentication beyond WordPress (no custom auth)
@@ -39,31 +39,35 @@ ai-elementor-sync.php          # Bootstrap, autoload, Plugin::init
 includes/
   Plugin.php                   # REST registration, request encoding fix, AdminPage init
   Admin/
-    AdminPage.php              # Settings submenu, admin UI page, enqueue assets (admin.css, admin.js)
+    AdminPage.php              # Settings submenu, admin UI page, enqueue assets (admin.css, admin.js); tabs: Inspect, Replace, LLM edit, Apply edits, Theme, Application password, Settings, Log
   Rest/
-    Routes.php                 # Route registration, permission callbacks (incl. create-application-password, settings, log)
+    Routes.php                 # Route registration, permission callbacks (incl. kit-settings, create-application-password, settings, log)
     Controllers/
       ReplaceTextController.php # replace_text, inspect
-      LlmEditController.php     # llm_edit, apply_edits
+      LlmEditController.php     # llm_edit (page/template or target=kit), apply_edits
+      KitSettingsController.php # get_settings, update_settings (kit-settings GET/POST)
       ApplicationPasswordController.php # create_application_password
       SettingsController.php   # get_settings, update_settings, get_log, clear_log
   Services/
     UrlResolver.php            # URL → post_id
     ElementorDataStore.php     # get/save _elementor_data (save: always delete+add to force write; update fallback if add fails)
-    ElementorTraverser.php     # find/replace (containment), buildPageDictionary, replaceByPath, replaceById, collectAllTextFields
+    ElementorTraverser.php     # find/replace (containment), buildPageDictionary, replaceByPath, replaceById, collectAllTextFields, image slots
+    KitStore.php               # getActiveKitId, getPageSettings, updatePageSettings (merge by _id for system_colors/system_typography), extractColors, extractTypography
     Normalizer.php             # normalize text for matching, preview_snippet
-    LlmClient.php              # requestEdits (dictionary array, instruction); config: AI service URL only; logs to UI log
+    LlmClient.php              # requestEdits (dictionary, instruction, image_slots); requestKitEdits (kit_settings, instruction → kit_patch); config: AI service URL only; logs to UI log
     CacheRegenerator.php       # Elementor cache/CSS regeneration; deletes _elementor_css meta, then clear_cache
   Support/
     Errors.php                 # REST error response helpers
     Logger.php                 # log (always UI log + error_log when WP_DEBUG), log_ui, get_ui_log, clear_ui_log
+docs/
+  LLM-SERVICE-KIT-EDITS.md     # Contract for LLM app: kit edit request/response (context_type: kit, kit_patch; merge by _id; value/color)
 ```
 
 Brief description of each:
 * **Plugin:** Bootstrap and REST wiring; fixes request body encoding for replace-text, llm-edit, and apply-edits routes; inits AdminPage.
-* **Admin:** Settings submenu “AI Elementor Sync”; single page with tabs: **Inspect**, **Replace text**, **LLM edit**, **Apply edits**, **Application password**, **Settings**, **Log**. Admin page capability: `edit_posts`. **Settings** tab: AI service URL (default Render.com), LLM register URL. **Log** tab: view/clear UI log (newest-first display). Uses cookie + nonce to call REST endpoints; “Create application password” calls create-application-password; “Register with LLM app” POSTs site_url, username, application_password to optional LLM register URL (option `ai_elementor_sync_llm_register_url` pre-fills the field).
-* **Rest:** Delivery layer; routes, permission checks, controllers that orchestrate services. Settings (GET/POST) require `manage_options`; log (GET) and clear-log (POST) require `edit_posts`.
-* **Services:** Application logic (traverser, normalizer, LLM client) and infrastructure (data store, URL resolution, cache). ElementorDataStore::save always uses delete+add to force physical write (fixes cache/update no-op); fallback to update if add fails; logs encode/save failures to UI log. CacheRegenerator deletes post meta `_elementor_css`, uses files_manager clear_cache, triggers post-specific `elementor/css_file/post/parse`, then `elementor/core/files/clear_cache` so frontend shows updated content.
+* **Admin:** Settings submenu “AI Elementor Sync”; single page with tabs: **Inspect**, **Replace text**, **LLM edit**, **Apply edits**, **Theme**, **Application password**, **Settings**, **Log**. **Theme** tab: Load kit settings, **Test kit connection** (GET kit-settings; result in result-kit-test), Save patch (JSON); colors/typography as tables from raw_settings (system_colors, system_typography, custom_colors); table shows **value** or **color** for hex. Admin page capability: `edit_posts`. **Settings** tab: AI service URL (default Render.com), LLM register URL. **Log** tab: view/clear UI log (newest-first display). Uses cookie + nonce to call REST endpoints; “Create application password” calls create-application-password; “Register with LLM app” POSTs site_url, username, application_password to optional LLM register URL (option `ai_elementor_sync_llm_register_url` pre-fills the field).
+* **Rest:** Delivery layer; routes, permission checks, controllers. **kit-settings** GET/POST require `manage_options`; llm-edit with **target=kit** requires `manage_options`. Settings (GET/POST) and log (GET/clear-log) require `edit_posts`.
+* **Services:** Application logic (traverser, normalizer, LLM client, **KitStore**) and infrastructure (data store, URL resolution, cache). **KitStore:** reads/writes active Kit page_settings (`_elementor_page_settings` on post from option `elementor_active_kit`); for **system_colors** and **system_typography**, **merge by _id** (update existing item with same _id/id; append only if new _id); when applying color patch, copies **value** to **color** for Elementor. ElementorDataStore::save and CacheRegenerator as before.
 * **Support:** Cross-cutting helpers (errors, logging). Logger always appends to UI log (option `ai_elementor_sync_ui_log`, max 100 entries); when WP_DEBUG, also writes to error_log.
 
 ---
@@ -79,13 +83,14 @@ Brief description of each:
 * **Page dictionary:** Ephemeral per request; list of entries `{ id, path, widget_type, field, text }` with optional `item_index`, `link_url`. One entry per text slot; link-only slots (e.g. icon) get one entry with field `link`. Built from current `_elementor_data`; used by external AI edit service. Not persisted.
 * **Path:** String of element indices (e.g. `"0/1/2"`). Index-based; valid only for the current document version.
 * **Id:** Elementor's unique element `id` (string) in the JSON; stable across reorders; preferred over path for apply-edits.
+* **Kit:** Active Elementor Kit (post ID from option `elementor_active_kit`). Kit **page_settings** stored in post meta `_elementor_page_settings`; keys include **system_colors**, **system_typography**, **custom_colors**. Each color/typography item has **`_id`** (or **id**) for matching; color hex may be in **value** or **color** (plugin copies value → color when applying patch). Plugin **merges by _id**: updates existing item with same _id; appends only if _id is new (no duplicate rows).
 
 ### 4.2 Key Attributes
 * **Replace request:** `url` (required), `find` (required), `replace` (required), `widget_types` (optional, default `['text-editor','heading']`). Replace-text searches all supported text slots for the given widget_types.
 * **Replace result:** `status` ∈ { `updated` | `not_found` | `ambiguous` }, `post_id`, `matches_found`, `matches_replaced`; `candidates` only when `ambiguous` (each candidate includes field, item_index when applicable).
 * **Inspect result:** `post_id`, `data_structure`, `elements_count`, `text_fields` (id, widget_type, field, preview, path; item_index when applicable), **image_slots** (id, path, slot_type: 'image'|'background_image', el_type, widget_type?, image_url, image_id?). Optional query param `widget_types` (default text-editor, heading).
-* **LlmEdit request:** `url` (required), `instruction` (required), `widget_types` (optional).
-* **LlmEdit result:** `status` (`ok` | `error`), `post_id`, `applied_count`, `failed` ([{ id?, path?, error }]); on service failure, 502 with `message`.
+* **LlmEdit request:** `url` or `template_id` or **target=kit**; `instruction` (required); `widget_types` (optional). When **target=kit**, no url/template; plugin sends kit_settings (colors, typography) to AI and expects **kit_patch** (colors/typography to merge by _id).
+* **LlmEdit result:** For page/template: `status` (`ok` | `error`), `post_id`, `applied_count`, `failed` ([{ id?, path?, error }]); on service failure, 502 with `message`. For **target=kit**: `status`, `kit_id`, `applied` (bool), `colors`, `typography`; on AI failure or non-JSON (e.g. 502 HTML), 502 with message (e.g. "AI service returned an error (502 Bad Gateway)...").
 * **ApplyEdits request:** `url` (required), `edits` (required; array of edit items), `widget_types` (optional). Each edit item: at least one of `id` or `path`; at least one of `new_text`, `new_url`/`new_link`, or **new_image_url**/new_attachment_id (or **new_image**: { url?, id? }); optional `field`, `item_index` (0-based). `new_link` can be `{ url, is_external?, nofollow? }`. Image edits target Image widget or container/section background_image by id/path. Backward compatible: `{ id, new_text }` applies to primary text field.
 * **ApplyEdits result:** Same as LlmEdit result; includes **applied_image_edits** when image edits were applied.
 
@@ -104,9 +109,9 @@ Brief description of each:
 * **Rules:** Same permission as replace (edit_post); read-only; no persistence changes.
 
 ### LlmEdit (POST /ai-elementor/v1/llm-edit)
-* **Input:** `url`, `instruction` (natural language), optional `widget_types`.
-* **Output:** `status` (`ok` | `error`), `post_id`, `applied_count`, `failed` ([{ id?, path?, error }]). On AI service failure, 502 with `message`.
-* **Rules:** Resolve URL → post; load Elementor data; build dictionary (id, path, widget_type, field, text, link_url?) via `buildPageDictionary`; build **image_slots** (id, path, slot_type, image_url, image_id?) via `buildImageSlots`; call `LlmClient::requestEdits(dictionary, instruction, image_slots)`. The external AI may return **text** edits (new_text), **link** edits (new_url/new_link for slots with link_url), and **image** edits (new_image_url/new_attachment_id or new_image for image_slots). For each edit: text → replaceById/replaceByPath; link → replaceUrlById/replaceUrlByPath; image → replaceImageById/replaceImageByPath (slot_type from getImageSlotTypeById/getImageSlotTypeByPath). Save once if any applied; regenerate cache. Empty edits = success with `applied_count: 0`.
+* **Input:** `url` or `template_id` or **target=kit**; `instruction` (natural language); optional `widget_types`.
+* **Output:** For page/template: `status` (`ok` | `error`), `post_id`, `applied_count`, `failed` ([{ id?, path?, error }]). For **target=kit**: `status`, `kit_id`, `applied`, `colors`, `typography`. On AI service failure or HTML response (e.g. 502), 502 with message (e.g. "AI service returned an error (502 Bad Gateway). The external LLM service may be down...").
+* **Rules:** If **target=kit**: require `manage_options`; load Kit page_settings via KitStore; call `LlmClient::requestKitEdits(kit_settings, instruction)`; expect **kit_patch** (colors/typography); merge by _id via KitStore::updatePageSettings (value → color for colors); return kit_id and updated colors/typography. Else: resolve URL/template → post; build dictionary and image_slots; call `LlmClient::requestEdits(dictionary, instruction, image_slots)`; apply text/link/image edits; save once if any applied; regenerate cache. Empty edits = success with `applied_count: 0`.
 
 ### ApplyEdits (POST /ai-elementor/v1/apply-edits)
 * **Input:** `url`, `edits` (array of edit items), optional `widget_types`. Each edit: at least one of `id` or `path`; at least one of `new_text` or `new_url`/`new_link`; optional `field`, `item_index`. Backward compatible: `{ id, new_text }` applies to primary text field.
@@ -118,16 +123,20 @@ Brief description of each:
 * **Output:** `{ password, username }` (plain password shown once) or error (e.g. app_passwords_unavailable, app_password_exists).
 * **Rules:** Requires `manage_options`. Uses `WP_Application_Passwords::create_new_application_password` for current user with name “AI Elementor Sync”. If a password with that name already exists, returns 400; revoke from profile first. Used by the admin UI so external tools (e.g. LLM app) can call this site’s REST API with Basic auth.
 
+### KitSettings (GET /ai-elementor/v1/kit-settings, POST /ai-elementor/v1/kit-settings)
+* **GET:** Returns active Kit page_settings: `kit_id`, `colors` (system_colors), `typography` (system_typography), `raw_settings`. Requires `manage_options`. Used by Theme tab "Load kit settings" and "Test kit connection".
+* **POST:** Body: `{ colors?, typography?, settings? }`. Merges into current page_settings: **system_colors** and **system_typography** are **merged by _id** (update existing item with same _id/id; append only if new _id); when applying color item, **value** is copied to **color** for Elementor. Requires `manage_options`. Used by Theme tab "Save patch" and by llm-edit (target=kit) after receiving kit_patch from AI.
+
 ### Settings (GET /ai-elementor/v1/settings, POST /ai-elementor/v1/settings)
-* **GET:** Returns `ai_service_url` (default `https://elementor-ui-edit-server.onrender.com/edits`), `llm_register_url`. Requires `manage_options`.
-* **POST:** Update `ai_service_url` and/or `llm_register_url`. Requires `manage_options`.
+* **GET:** Returns `ai_service_url` (default `https://elementor-ui-edit-server.onrender.com/edits`), `llm_register_url`, `sideload_images`. Requires `manage_options`.
+* **POST:** Update `ai_service_url` and/or `llm_register_url` and/or `sideload_images`. Requires `manage_options`.
 
 ### Log (GET /ai-elementor/v1/log, POST /ai-elementor/v1/clear-log)
 * **GET log:** Returns UI log entries (time, level, message, context). Requires `edit_posts`.
 * **POST clear-log:** Clears the UI log. Requires `edit_posts`. Used by the Log tab “Clear log” button.
 
 ### Admin UI and register with LLM app
-* **Admin UI:** Under Settings → AI Elementor Sync (capability `edit_posts`), editors can run Inspect, Replace text, LLM edit, Apply edits via forms (cookie + nonce). Settings tab configures AI service URL and LLM register URL (manage_options required for saving). Log tab shows UI log entries (newest first) and Clear log. No Application Password needed for in-admin use.
+* **Admin UI:** Under Settings → AI Elementor Sync (capability `edit_posts`), editors can run Inspect, Replace text, LLM edit (target: URL, Template, Auto, or **Kit (Theme)**), Apply edits, and **Theme** tab (Load kit settings, **Test kit connection**, Save patch) via forms (cookie + nonce). Theme tab displays colors/typography as tables from raw_settings (value or color for hex). Settings tab configures AI service URL, LLM register URL, Sideload images (manage_options required for saving). Log tab shows UI log entries (newest first) and Clear log. No Application Password needed for in-admin use.
 * **Application password:** “Create application password” shows the password once with Copy; use with username for Basic auth. If Application Passwords are disabled (e.g. `allow_application_passwords` filter), the UI shows a message and hides the button.
 * **Register with LLM app:** After creating an application password, the “Register this site with LLM app” section appears. User enters the LLM app’s “register site” endpoint URL (optional option `ai_elementor_sync_llm_register_url` pre-fills it). Clicking Register POSTs `{ site_url, username, application_password }` to that URL. The **unified UI** to access and edit multiple sites is implemented in the LLM app, not in this plugin; the plugin only provides the register flow so the LLM app can store credentials and call back to each site.
 
@@ -163,6 +172,14 @@ ElementorTraverser
 
 LlmClient
   requestEdits(dictionary: array, instruction, image_slots?: array): { edits: [...], error: string|null }  # Sends dictionary, image_slots, instruction, edit_capabilities to AI. edits: id?, path?, field?, item_index?, new_text?, new_url?, new_link?, new_image_url?, new_attachment_id?, new_image?; config: AI service URL only
+  requestKitEdits(kit_settings: { colors, typography }, instruction): { kit_patch: {...}, error: string|null }  # Sends context_type: 'kit', kit_settings, instruction; expects kit_patch (colors?, typography?, settings?); plugin merges by _id
+
+KitStore
+  getActiveKitId(): ?int   # option elementor_active_kit
+  getPageSettings(): ?array   # post meta _elementor_page_settings on kit post
+  updatePageSettings(patch: array): bool   # merge by _id for system_colors/system_typography; value → color for colors
+  extractColors(settings): array   # system_colors
+  extractTypography(settings): array   # system_typography
 
 Normalizer
   normalize(text: ?string): string
@@ -192,7 +209,7 @@ Interfaces are implicit (PHP classes); infrastructure (WP meta, Elementor API) i
 
 ## 7. Data & State
 
-* **Persistence:** WordPress post meta `_elementor_data` (JSON string or array; Elementor document or raw elements). Read/write via `ElementorDataStore`; `wp_slash` used on save to match WordPress behavior. Option `ai_elementor_sync_ui_log` stores UI log entries (array, max 100). Options `ai_elementor_sync_ai_service_url`, `ai_elementor_sync_llm_register_url` for Settings.
+* **Persistence:** WordPress post meta `_elementor_data` (JSON string or array; Elementor document or raw elements). Read/write via `ElementorDataStore`; `wp_slash` used on save to match WordPress behavior. **Kit:** Option `elementor_active_kit` = kit post ID; post meta `_elementor_page_settings` on that post holds system_colors, system_typography, custom_colors. KitStore merges by _id (update existing; append only if new _id); when applying color patch, copies value → color for Elementor. Option `ai_elementor_sync_ui_log` stores UI log entries (array, max 100). Options `ai_elementor_sync_ai_service_url`, `ai_elementor_sync_llm_register_url`, `ai_elementor_sync_sideload_images` for Settings.
 * **Relevant state:** Elementor element tree (nested `elements`, `settings`); match count and candidates during replace; page dictionary is ephemeral (built per request, not stored). CacheRegenerator deletes `_elementor_css` post meta, calls files_manager clear_cache, triggers post-specific parse and clear_cache action so frontend picks up changes.
 * **Paths:** Index-based (e.g. "0/1/2"); valid only for the current document. If Elementor data is edited elsewhere, indices can change. **Id** is stable across reorders.
 * **Invariants:** Replace (replace-text) is written only when exactly one widget contains the find (normalized); replacement is substring or whole-widget. Apply (llm-edit / apply-edits) writes only when id or path resolves to a target widget.
@@ -203,7 +220,7 @@ Interfaces are implicit (PHP classes); infrastructure (WP meta, Elementor API) i
 ## 8. Error Handling Strategy
 
 * **Permission/validation (Routes):** Return `WP_Error` with 401 (not logged in), 400 (missing url), 403 (url unresolved or no edit_post), 404 (post not found).
-* **Controller:** Use `Errors::error_response()` or `Errors::forbidden()` for business failures (e.g. no Elementor data, save failure) with appropriate HTTP codes (400, 403, 404, 500). For llm-edit, when `LlmClient::requestEdits` returns `error` non-null, return 502 with that message; do not apply any edit.
+* **Controller:** Use `Errors::error_response()` or `Errors::forbidden()` for business failures (e.g. no Elementor data, save failure) with appropriate HTTP codes (400, 403, 404, 500). For llm-edit (page/template), when `LlmClient::requestEdits` returns `error` non-null, return 502 with that message; do not apply any edit. For llm-edit (target=kit), when `LlmClient::requestKitEdits` returns `error` non-null, return 502. **Admin JS:** When REST response is HTML (e.g. 502), `responseToJson` throws; if status is 502, message is "AI service returned an error (502 Bad Gateway). The external LLM service may be down, overloaded, or the AI service URL may be wrong. Check Settings → AI service URL and try again."
 * **Invalid edits:** Apply records failed edits in `failed` ([{ id?, path?, error }]); invalid id/path or non-target widgets are skipped, not fatal.
 * **Services:** Return null/false or structured arrays; no framework-bound exceptions. `CacheRegenerator` catches Throwable and no-ops so cache never causes fatals. `LlmClient` returns `{ edits, error }`; no API key in plugin.
 * **Rule:** No domain-specific exception types; all failures surface as REST responses or WP_Error.
@@ -239,6 +256,7 @@ Interfaces are implicit (PHP classes); infrastructure (WP meta, Elementor API) i
 
 * **Plan 1 (implemented):** More widgets (button, icon, image-box, icon-box, testimonial, counter, animated-headline, flip-box, icon-list, accordion, tabs, price-list, price-table), multi-field and repeater support, URL/link editing (new_url/new_link in apply-edits), extended dictionary (field, item_index, link_url), backward-compatible apply-edits (primary field when field omitted).
 * **Plan 2 (implemented):** Image widget and container/section background image: buildImageSlots, replaceImageByPath, replaceImageById, getImageSlotTypeByPath/getImageSlotTypeById; Inspect returns image_slots; apply-edits extended with new_image_url, new_attachment_id (or new_image: { url?, id? }); image edits resolve slot_type by id/path and apply via traverser; applied_image_edits in response; Admin Inspect shows image_slots table, Apply-edits placeholder includes image example. **LLM support:** llm-edit sends dictionary (with link_url), image_slots, instruction, and edit_capabilities to the AI; the AI may return text (new_text), link (new_url/new_link), and image (new_image_url/new_attachment_id/new_image) edits; plugin applies all three. Link edits were already supported; image_slots and image edits added. Optional sideload: when "Sideload images from URL" is enabled, image edits with only a URL are downloaded into the media library.
+* **Plan 4 (implemented): Theme (Kit) edits.** **KitStore:** getActiveKitId, getPageSettings, updatePageSettings (merge by _id for system_colors/system_typography; value → color when applying color patch), extractColors, extractTypography. **KitSettingsController:** GET/POST kit-settings (manage_options). **LlmEditController:** When target=kit, load kit_settings, call LlmClient::requestKitEdits(kit_settings, instruction); expect kit_patch (colors, typography, settings); merge by _id via KitStore::updatePageSettings. **LlmClient:** requestKitEdits sends context_type: 'kit', kit_settings, instruction; expects kit_patch (or kit_edits/patch). **Admin:** Theme tab with Load kit settings, **Test kit connection** (GET kit-settings; result-kit-test), Save patch (JSON); colors/typography displayed as **tables** from raw_settings (system_colors, system_typography, custom_colors); table shows **value** or **color** for hex (Elementor may use color). **Admin JS:** testKitConnection (REST URL check, fallback result area, console log); renderKitSettingsResult builds tables from raw_settings; colorValue uses item.value or item.color. **502/HTML:** responseToJson throws with friendlier message when status 502 ("AI service returned an error (502 Bad Gateway)..."). **Docs:** docs/LLM-SERVICE-KIT-EDITS.md — contract for LLM app: context_type: kit, kit_patch response, merge by _id (update existing; do not duplicate), value/color, one item per slot to change. README points to LLM-SERVICE-KIT-EDITS.md for kit edits.
 * **Potential extensions:** Optional case-insensitive match, batch by URL list; dry-run for AI edits (return proposed edits without applying); rate limiting or optimistic locking; optional `match=exact` for replace-text to force exact equality.
 * **Limitations:** Default widget_types remain text-editor and heading for backward compatibility; clients can pass full SUPPORTED_WIDGET_TYPES for full coverage; no undo; no conflict detection—concurrent edits are last-write-wins; path is valid only for current document version (use id for stability).
 * **Risks:** Elementor schema or API changes may require updates to traverser or cache regeneration; large pages may hit token limits (dictionary truncation via `max_text_len`); external service cost and latency.
@@ -252,6 +270,7 @@ Interfaces are implicit (PHP classes); infrastructure (WP meta, Elementor API) i
 * Use this document as the **single source of truth** for high-level behavior and structure; do not assume from partial code reads.
 * **Respect boundaries:** Rest layer handles HTTP and permissions; controller orchestrates; services contain logic and infrastructure. Do not put WordPress or Elementor API calls in the controller beyond what exists (e.g. `get_post`, `current_user_can`). AI edit calls must go through `LlmClient`; apply updates must use `ElementorTraverser::replaceById` or `replaceByPath`. Do not bypass these services.
 * **Replace (replace-text):** Do not change the rule “replace only when exactly one widget contains the find” without explicit product requirement.
+* **Kit (Theme) edits:** LlmEdit with target=kit sends kit_settings (colors, typography) and instruction to the same AI URL; the service must return **kit_patch** (colors/typography). Plugin **merges by _id** (updates existing item; does not append duplicate). LLM app contract: see **docs/LLM-SERVICE-KIT-EDITS.md** (context_type: kit, merge by _id, value/color, one item per slot).
 * **Ask before:** Adding new widget types, changing normalizer semantics, or introducing new persistence or external services beyond the configured AI service URL.
 * Do not read the entire codebase when this artifact is sufficient for the requested change.
 
@@ -259,5 +278,5 @@ Interfaces are implicit (PHP classes); infrastructure (WP meta, Elementor API) i
 
 ## 13. Last Updated
 
-* **Date:** 2026-02-01  
-* **Change context:** **Plan 2 implemented:** Image widget and container/section background image support; ElementorTraverser buildImageSlots, replaceImageByPath, replaceImageById, getImageSlotTypeByPath/getImageSlotTypeById; Inspect returns image_slots; apply-edits accepts new_image_url/new_attachment_id/new_image; LlmEditController normalizes and applies image edits (slot_type resolution, attachment URL when only id); applied_image_edits in response; ReplaceTextController Inspect adds image_slots; Admin Inspect shows image_slots table, Apply-edits placeholder with image example; Routes and docs updated. LLM contract documented: request includes dictionary (with link_url), image_slots, instruction, edit_capabilities; response edits may be text (new_text), link (new_url/new_link), image (new_image_url/new_attachment_id/new_image). AI_SERVICE.md and README updated with full contract.
+* **Date:** 2026-02-02  
+* **Change context:** **Plan 4 (Theme/Kit) and fixes.** KitStore (merge by _id for system_colors/system_typography; value → color for Elementor); KitSettingsController GET/POST kit-settings; LlmEditController target=kit (requestKitEdits → kit_patch → merge by _id); LlmClient requestKitEdits (context_type: kit, kit_patch); Admin Theme tab (Load kit settings, Test kit connection, tables from raw_settings with value/color, Save patch); testKitConnection (REST URL check, fallback result area); 502/HTML friendlier message in responseToJson; docs/LLM-SERVICE-KIT-EDITS.md (contract for LLM app: merge by _id, value/color, one item per slot). README and SYSTEM_ARTIFACT updated with kit-settings, Theme tab, merge-by-_id, and doc reference.

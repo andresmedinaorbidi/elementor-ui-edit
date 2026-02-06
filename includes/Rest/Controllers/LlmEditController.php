@@ -9,6 +9,7 @@ use AiElementorSync\Services\EditTargetResolver;
 use AiElementorSync\Services\ElementorDataStore;
 use AiElementorSync\Services\ElementorTraverser;
 use AiElementorSync\Services\ImageSideload;
+use AiElementorSync\Services\KitStore;
 use AiElementorSync\Services\LlmClient;
 use AiElementorSync\Support\Errors;
 use AiElementorSync\Support\Logger;
@@ -32,10 +33,94 @@ final class LlmEditController {
 			$params = $request->get_body_params();
 		}
 		$instruction = isset( $params['instruction'] ) && is_string( $params['instruction'] ) ? $params['instruction'] : null;
+		$target = isset( $params['target'] ) && is_string( $params['target'] ) ? trim( $params['target'] ) : '';
 		$widget_types = isset( $params['widget_types'] ) && is_array( $params['widget_types'] ) ? $params['widget_types'] : ElementorTraverser::DEFAULT_WIDGET_TYPES;
 
 		if ( $instruction === null ) {
 			return Errors::error_response( 'Missing required parameter: instruction. Provide one of url, template_id, or document_type.', 0, 400 );
+		}
+
+		// Target kit: edit global colors/typography via AI, no page/template.
+		if ( $target === 'kit' ) {
+			if ( ! current_user_can( 'manage_options' ) ) {
+				return Errors::forbidden( 'You do not have permission to edit kit settings.', 0 );
+			}
+			$kit_id = KitStore::getActiveKitId();
+			if ( $kit_id === null ) {
+				return new WP_REST_Response( [
+					'status'  => 'error',
+					'message' => 'No active Elementor kit found.',
+					'code'    => 'no_active_kit',
+				], 404 );
+			}
+			$settings = KitStore::getPageSettings();
+			if ( $settings === null ) {
+				return new WP_REST_Response( [
+					'status'  => 'error',
+					'message' => 'Kit page settings could not be read.',
+					'code'    => 'invalid_settings',
+				], 500 );
+			}
+			$colors = KitStore::extractColors( $settings );
+			$kit_settings = [
+				'colors'     => KitStore::normalizeColorsForApi( $colors ),
+				'typography' => KitStore::extractTypography( $settings ),
+			];
+			$result = LlmClient::requestKitEdits( $kit_settings, $instruction );
+			$kit_patch = $result['kit_patch'] ?? [];
+			$error = $result['error'] ?? null;
+			if ( $error !== null ) {
+				return new WP_REST_Response( [
+					'status'  => 'error',
+					'message' => $error,
+					'kit_id'  => $kit_id,
+				], 502 );
+			}
+			$patch = [];
+			if ( isset( $kit_patch['colors'] ) && is_array( $kit_patch['colors'] ) ) {
+				$patch['system_colors'] = $kit_patch['colors'];
+			}
+			if ( isset( $kit_patch['typography'] ) && is_array( $kit_patch['typography'] ) ) {
+				$patch['system_typography'] = $kit_patch['typography'];
+			}
+			if ( isset( $kit_patch['settings'] ) && is_array( $kit_patch['settings'] ) ) {
+				foreach ( $kit_patch['settings'] as $key => $value ) {
+					if ( is_string( $key ) ) {
+						$patch[ $key ] = $value;
+					}
+				}
+			}
+			if ( empty( $patch ) ) {
+				// No changes to apply; return current kit settings.
+				$settings_after = KitStore::getPageSettings();
+				$colors     = $settings_after ? KitStore::extractColors( $settings_after ) : [];
+				$typography = $settings_after ? KitStore::extractTypography( $settings_after ) : [];
+				return new WP_REST_Response( [
+					'status'     => 'ok',
+					'applied'    => false,
+					'kit_id'     => $kit_id,
+					'colors'     => $colors,
+					'typography' => $typography,
+				], 200 );
+			}
+			$updated = KitStore::updatePageSettings( $patch );
+			if ( ! $updated ) {
+				return new WP_REST_Response( [
+					'status'  => 'error',
+					'message' => 'Failed to save kit settings.',
+					'kit_id'  => $kit_id,
+				], 500 );
+			}
+			$settings_after = KitStore::getPageSettings();
+			$colors     = $settings_after ? KitStore::extractColors( $settings_after ) : [];
+			$typography = $settings_after ? KitStore::extractTypography( $settings_after ) : [];
+			return new WP_REST_Response( [
+				'status'     => 'ok',
+				'applied'    => true,
+				'kit_id'     => $kit_id,
+				'colors'     => $colors,
+				'typography' => $typography,
+			], 200 );
 		}
 
 		$target_params = EditTargetResolver::getTargetParamsFromRequest( $request );

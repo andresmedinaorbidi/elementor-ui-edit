@@ -11,6 +11,7 @@
 	const siteUrl = config.site_url || '';
 
 	var templatesCache = [];
+	var lastKitData = null;
 
 	// #region agent log — in WordPress open DevTools (F12) → Console to see these
 	function logToDebug( message, data ) {
@@ -30,8 +31,12 @@
 				startsWithAngle: text.trim().charAt( 0 ) === '<'
 			} );
 			if ( looksLikeHtml ) {
-				var msg = 'Server returned HTML instead of JSON (status ' + res.status + '). The REST API may be unavailable, or you may need to log in again.';
-				logToDebug( 'HTML response, skipping parse', { status: res.status, url: res.url } );
+				var status = res.status;
+				var isGatewayOrOrigin = status === 502 || status === 520 || status === 503;
+				var msg = isGatewayOrOrigin
+					? 'Server returned an error (status ' + status + '). The REST API may be unavailable, or the external AI service may be down. Check Settings → AI service URL and try again.'
+					: 'Server returned HTML instead of JSON (status ' + status + '). The REST API may be unavailable, or you may need to log in again.';
+				logToDebug( 'HTML response, skipping parse', { status: status, url: res.url } );
 				throw new Error( msg );
 			}
 			try {
@@ -159,7 +164,12 @@
 
 	// Build target payload for API: { url } or { template_id }. prefix = 'inspect'|'replace'|'llm'|'apply'
 	function getTargetPayload( prefix ) {
-		var target = ( document.querySelector( 'input[name="' + prefix + '-target"]:checked' ) || {} ).value;
+		var formEl = prefix === 'llm' ? document.getElementById( 'form-llm-edit' ) : null;
+		var radio = formEl ? formEl.querySelector( 'input[name="' + prefix + '-target"]:checked' ) : document.querySelector( 'input[name="' + prefix + '-target"]:checked' );
+		var target = radio && radio.value ? String( radio.value ).trim().toLowerCase() : '';
+		if ( target === 'kit' && prefix === 'llm' ) {
+			return { target: 'kit' };
+		}
 		if ( target === 'template' ) {
 			var sel = document.getElementById( prefix + '-template-id' );
 			var id = sel ? parseInt( sel.value, 10 ) : 0;
@@ -187,45 +197,74 @@
 		return null;
 	}
 
-	// Set visibility of URL / template / auto hint from current target radio. prefix = inspect|replace|llm|apply, hasAuto = whether form has Auto option
-	function setTargetVisibility( prefix, hasAuto ) {
+	// Set visibility of URL / template / auto / kit hint from current target radio. prefix = inspect|replace|llm|apply, hasAuto = whether form has Auto option, hasKit = whether form has Kit option
+	function setTargetVisibility( prefix, hasAuto, hasKit ) {
 		var checked = document.querySelector( 'input[name="' + prefix + '-target"]:checked' );
 		var v = checked ? checked.value : 'url';
 		var urlWrap = document.getElementById( prefix + '-url-wrap' );
 		var templateWrap = document.getElementById( prefix + '-template-wrap' );
 		var autoHint = hasAuto ? document.getElementById( prefix + '-auto-hint' ) : null;
-		if ( urlWrap ) urlWrap.classList.toggle( 'hidden', v !== 'url' );
-		if ( templateWrap ) templateWrap.classList.toggle( 'hidden', v !== 'template' );
-		if ( autoHint ) autoHint.classList.toggle( 'hidden', v !== 'auto' );
-		// When Auto is selected, URL is not needed; ensure URL input is not required
+		var kitHint = hasKit ? document.getElementById( prefix + '-kit-hint' ) : null;
+		if ( urlWrap ) {
+			urlWrap.classList.toggle( 'hidden', v !== 'url' );
+			urlWrap.style.display = ( v === 'url' ) ? '' : 'none';
+		}
+		if ( templateWrap ) {
+			templateWrap.classList.toggle( 'hidden', v !== 'template' );
+			templateWrap.style.display = ( v === 'template' ) ? '' : 'none';
+		}
+		if ( autoHint ) {
+			autoHint.classList.toggle( 'hidden', v !== 'auto' );
+			autoHint.style.display = ( v === 'auto' ) ? '' : 'none';
+		}
+		if ( kitHint ) {
+			kitHint.classList.toggle( 'hidden', v !== 'kit' );
+			kitHint.style.display = ( v === 'kit' ) ? '' : 'none';
+		}
+		// When Auto or Kit is selected, URL is not needed; ensure URL input is not required
 		var urlInput = document.getElementById( prefix + '-url' );
 		if ( urlInput ) urlInput.removeAttribute( 'required' );
 	}
 
 	// Toggle URL vs template wrap when target radio changes
 	function initTargetToggles() {
-		function toggle( prefix, hasAuto ) {
+		function toggle( prefix, hasAuto, hasKit ) {
+			hasKit = hasKit || false;
 			var urlWrap = document.getElementById( prefix + '-url-wrap' );
 			var templateWrap = document.getElementById( prefix + '-template-wrap' );
 			var autoHint = hasAuto ? document.getElementById( prefix + '-auto-hint' ) : null;
+			var kitHint = hasKit ? document.getElementById( prefix + '-kit-hint' ) : null;
 			var radios = document.querySelectorAll( 'input[name="' + prefix + '-target"]' );
 			radios.forEach( function ( radio ) {
 				radio.addEventListener( 'change', function () {
 					var v = this.value;
-					if ( urlWrap ) urlWrap.classList.toggle( 'hidden', v !== 'url' );
-					if ( templateWrap ) templateWrap.classList.toggle( 'hidden', v !== 'template' );
-					if ( autoHint ) autoHint.classList.toggle( 'hidden', v !== 'auto' );
+					if ( urlWrap ) {
+						urlWrap.classList.toggle( 'hidden', v !== 'url' );
+						urlWrap.style.display = ( v === 'url' ) ? '' : 'none';
+					}
+					if ( templateWrap ) {
+						templateWrap.classList.toggle( 'hidden', v !== 'template' );
+						templateWrap.style.display = ( v === 'template' ) ? '' : 'none';
+					}
+					if ( autoHint ) {
+						autoHint.classList.toggle( 'hidden', v !== 'auto' );
+						autoHint.style.display = ( v === 'auto' ) ? '' : 'none';
+					}
+					if ( kitHint ) {
+						kitHint.classList.toggle( 'hidden', v !== 'kit' );
+						kitHint.style.display = ( v === 'kit' ) ? '' : 'none';
+					}
 					var urlInput = document.getElementById( prefix + '-url' );
 					if ( urlInput ) urlInput.removeAttribute( 'required' );
 				} );
 			} );
 			// Set initial visibility from current checked radio
-			setTargetVisibility( prefix, hasAuto );
+			setTargetVisibility( prefix, hasAuto, hasKit );
 		}
-		toggle( 'inspect', false );
-		toggle( 'replace', false );
-		toggle( 'llm', true );
-		toggle( 'apply', false );
+		toggle( 'inspect', false, false );
+		toggle( 'replace', false, false );
+		toggle( 'llm', true, true );
+		toggle( 'apply', false, false );
 	}
 
 	// Tab switching (optional onShow callback for tab name)
@@ -246,7 +285,9 @@
 				} );
 				this.classList.add( 'nav-tab-active' );
 				this.setAttribute( 'aria-selected', 'true' );
-				if ( onTabShow && typeof onTabShow === 'function' ) onTabShow( tabName );
+				if ( onTabShow && typeof onTabShow === 'function' ) {
+					onTabShow( tabName );
+				}
 			} );
 		} );
 	}
@@ -312,6 +353,427 @@
 			.catch( function ( err ) {
 				container.innerHTML = '<p class="error">Failed to load log: ' + escapeHtml( err.message || String( err ) ) + '</p>';
 			} );
+	}
+
+	function getKitTestResultEl() {
+		var el = document.getElementById( 'result-kit-test' );
+		if ( el ) return el;
+		var tab = document.getElementById( 'tab-theme' );
+		if ( tab ) {
+			el = tab.querySelector( '.ai-elementor-sync-result' );
+			if ( el ) return el;
+		}
+		return document.getElementById( 'result-kit-settings' );
+	}
+
+	function testKitConnection() {
+		var resultEl = getKitTestResultEl();
+		var show = function ( html, isError ) {
+			var el = getKitTestResultEl();
+			if ( el ) {
+				el.style.display = '';
+				el.className = 'ai-elementor-sync-result ' + ( isError ? 'error' : 'success' );
+				el.innerHTML = html;
+			}
+			if ( typeof console !== 'undefined' && console.log ) {
+				console.log( '[AI Elementor Sync] testKitConnection result', isError ? 'error' : 'ok' );
+			}
+		};
+		try {
+			if ( ! ( restUrl && restUrl.length > 0 ) ) {
+				show( '<p><strong>REST URL not configured.</strong></p><p class="description">Check that aiElementorSync.rest_url is set (e.g. in wp_localize_script).</p>', true );
+				return;
+			}
+			if ( resultEl ) {
+				resultEl.style.display = '';
+				resultEl.textContent = 'Testing…';
+				resultEl.className = 'ai-elementor-sync-result loading';
+			}
+			var testUrl = restUrl.replace( /\/$/, '' ) + '/kit-settings';
+			if ( typeof console !== 'undefined' && console.log ) {
+				console.log( '[AI Elementor Sync] testKitConnection running', { restUrl: restUrl, testUrl: testUrl } );
+			}
+			fetch( testUrl, {
+				method: 'GET',
+				headers: getHeaders( false ),
+				credentials: 'same-origin',
+			} )
+				.then( function ( res ) {
+					return res.text().then( function ( text ) {
+						var data = null;
+						try {
+							data = text ? JSON.parse( text ) : null;
+						} catch ( err ) {
+							data = { _raw: text };
+						}
+						return { ok: res.ok, status: res.status, data: data, text: text };
+					} );
+				} )
+				.then( function ( result ) {
+					var msg = 'HTTP ' + result.status + ( result.ok ? ' — Plugin can read Elementor theme settings.' : ' — ' + ( result.data && result.data.message ? result.data.message : 'Request failed.' ) );
+					var html = '<p><strong>' + escapeHtml( msg ) + '</strong></p>';
+					if ( result.data && result.data.kit_id != null ) {
+						html += '<p>Kit ID: ' + escapeHtml( String( result.data.kit_id ) ) + '</p>';
+					}
+					html += '<details><summary>Raw response</summary><pre>' + escapeHtml( typeof result.text === 'string' ? result.text : JSON.stringify( result.data, null, 2 ) ) + '</pre></details>';
+					show( html, ! result.ok );
+				} )
+				.catch( function ( err ) {
+					show(
+						'<p><strong>Request failed:</strong> ' + escapeHtml( err.message || String( err ) ) + '</p>' +
+						'<p class="description">Check that you are logged in and have permission. Open DevTools (F12) → Network to see the request to <code>' + escapeHtml( testUrl ) + '</code>.</p>',
+						true
+					);
+					if ( typeof console !== 'undefined' && console.error ) {
+						console.error( '[AI Elementor Sync] testKitConnection error', err );
+					}
+				} );
+		} catch ( err ) {
+			show( '<p><strong>Error:</strong> ' + escapeHtml( err.message || String( err ) ) + '</p>', true );
+			if ( typeof console !== 'undefined' && console.error ) {
+				console.error( '[AI Elementor Sync] testKitConnection threw', err );
+			}
+		}
+	}
+	try {
+		window.aiElementorSyncTestKit = testKitConnection;
+	} catch ( err ) {}
+
+	function loadKitSettings() {
+		var resultEl = document.getElementById( 'result-kit-settings' );
+		if ( resultEl ) {
+			setLoading( 'result-kit-settings' );
+		}
+		logToDebug( 'fetch start', { url: restUrl + '/kit-settings' }, 'C' );
+		fetch( restUrl + '/kit-settings', {
+			method: 'GET',
+			headers: getHeaders( false ),
+			credentials: 'same-origin',
+		} )
+			.then( function ( res ) {
+				return responseToJson( res ).then( function ( data ) {
+					return { ok: res.ok, status: res.status, data: data };
+				} );
+			} )
+			.then( function ( result ) {
+				if ( result.ok && result.data ) {
+					lastKitData = result.data;
+				} else {
+					lastKitData = null;
+				}
+				var content = renderKitSettingsResult( result.data, result.status );
+				var el = document.getElementById( 'result-kit-settings' );
+				if ( el ) setResult( 'result-kit-settings', content, ! result.ok );
+			} )
+			.catch( function ( err ) {
+				lastKitData = null;
+				var el = document.getElementById( 'result-kit-settings' );
+				if ( el ) setResult( 'result-kit-settings', '<p class="error">' + escapeHtml( err.message || String( err ) ) + '</p>', true );
+			} );
+	}
+
+	function renderKitSettingsResult( data, status ) {
+		if ( status === 404 || ( data && data.code === 'no_active_kit' ) ) {
+			return '<p class="error">No active Elementor kit found.</p>';
+		}
+		if ( status >= 500 || ( data && ( data.code === 'invalid_settings' || data.code === 'internal_error' ) ) ) {
+			return '<p class="error">' + escapeHtml( ( data && data.message ) || 'Server error.' ) + '</p>' + ( data ? renderJson( data ) : '' );
+		}
+		if ( ! data ) return renderJson( data );
+		var raw = data.raw_settings && typeof data.raw_settings === 'object' ? data.raw_settings : {};
+		var colorsList = Array.isArray( raw.system_colors ) ? raw.system_colors : ( Array.isArray( data.colors ) ? data.colors : [] );
+		var typographyList = Array.isArray( raw.system_typography ) ? raw.system_typography : ( Array.isArray( data.typography ) ? data.typography : [] );
+		var customColors = Array.isArray( raw.custom_colors ) ? raw.custom_colors : [];
+		var html = '';
+		if ( data.kit_id != null ) {
+			html += '<p><strong>Kit ID:</strong> ' + escapeHtml( String( data.kit_id ) ) + '</p>';
+		}
+		// Colors table: support _id or id, title, value (string or object)
+		function colorValue( item ) {
+			if ( item == null ) return '';
+			var valStr = item.value != null && item.value !== '' ? String( item.value ).trim() : '';
+			var colStr = item.color != null && item.color !== '' ? String( item.color ).trim() : '';
+			var v = valStr !== '' ? item.value : ( colStr !== '' ? item.color : '' );
+			if ( typeof v === 'string' ) return v;
+			if ( v && typeof v === 'object' && typeof v.color === 'string' ) return v.color;
+			if ( typeof v === 'object' ) return JSON.stringify( v );
+			return v != null ? String( v ) : '';
+		}
+		function colorId( item ) {
+			if ( item == null ) return '';
+			if ( item._id != null ) return String( item._id );
+			if ( item.id != null ) return String( item.id );
+			return '';
+		}
+		function hexForColorInput( hex ) {
+			if ( ! hex || typeof hex !== 'string' ) return '#000000';
+			hex = hex.trim();
+			if ( hex.charAt( 0 ) !== '#' ) hex = '#' + hex;
+			if ( hex.length === 7 && /^#[0-9a-fA-F]{6}$/.test( hex ) ) return hex;
+			if ( hex.length === 4 && /^#[0-9a-fA-F]{3}$/.test( hex ) ) {
+				return '#' + hex.charAt( 1 ) + hex.charAt( 1 ) + hex.charAt( 2 ) + hex.charAt( 2 ) + hex.charAt( 3 ) + hex.charAt( 3 );
+			}
+			return '#000000';
+		}
+		var kitFontOptions = [ 'Default', 'system-ui', 'Arial', 'Helvetica', 'Georgia', 'Times New Roman', 'Roboto', 'Open Sans', 'Lato', 'Montserrat', 'Oswald', 'Poppins', 'Source Sans Pro', 'Playfair Display', 'Merriweather' ];
+		if ( colorsList.length > 0 ) {
+			html += '<div class="ai-elementor-sync-kit-colors" data-list="system_colors"><h3 class="ai-elementor-sync-result-heading">System colors (' + colorsList.length + ')</h3>';
+			html += '<table class="widefat striped"><thead><tr><th>id</th><th>title</th><th>value</th></tr></thead><tbody>';
+			colorsList.forEach( function ( item ) {
+				if ( typeof item === 'object' && item !== null ) {
+					var id = colorId( item );
+					var hex = hexForColorInput( colorValue( item ) );
+					html += '<tr data-id="' + escapeHtml( id ) + '" data-title="' + escapeHtml( item.title || '' ) + '">';
+					html += '<td><code>' + escapeHtml( id ) + '</code></td><td>' + escapeHtml( item.title || '' ) + '</td>';
+					html += '<td class="kit-color-cell"><input type="color" class="kit-color-input" data-id="' + escapeHtml( id ) + '" value="' + escapeHtml( hex ) + '" title="' + escapeHtml( hex ) + '"><input type="text" class="kit-hex-input" data-id="' + escapeHtml( id ) + '" value="' + escapeHtml( hex ) + '" size="8" maxlength="7" placeholder="#hex"></td>';
+					html += '</tr>';
+				} else {
+					html += '<tr><td colspan="3">' + escapeHtml( JSON.stringify( item ) ) + '</td></tr>';
+				}
+			} );
+			html += '</tbody></table></div>';
+		}
+		if ( customColors.length > 0 ) {
+			html += '<div class="ai-elementor-sync-kit-colors" data-list="custom_colors"><h3 class="ai-elementor-sync-result-heading">Custom colors (' + customColors.length + ')</h3>';
+			html += '<table class="widefat striped"><thead><tr><th>id</th><th>title</th><th>value</th></tr></thead><tbody>';
+			customColors.forEach( function ( item ) {
+				if ( typeof item === 'object' && item !== null ) {
+					var id = colorId( item );
+					var hex = hexForColorInput( colorValue( item ) );
+					html += '<tr data-id="' + escapeHtml( id ) + '" data-title="' + escapeHtml( item.title || '' ) + '">';
+					html += '<td><code>' + escapeHtml( id ) + '</code></td><td>' + escapeHtml( item.title || '' ) + '</td>';
+					html += '<td class="kit-color-cell"><input type="color" class="kit-color-input" data-id="' + escapeHtml( id ) + '" value="' + escapeHtml( hex ) + '" title="' + escapeHtml( hex ) + '"><input type="text" class="kit-hex-input" data-id="' + escapeHtml( id ) + '" value="' + escapeHtml( hex ) + '" size="8" maxlength="7" placeholder="#hex"></td>';
+					html += '</tr>';
+				} else {
+					html += '<tr><td colspan="3">' + escapeHtml( JSON.stringify( item ) ) + '</td></tr>';
+				}
+			} );
+			html += '</tbody></table></div>';
+		}
+		// Typography table: collect all keys from items and render as columns; add Edit font column
+		if ( typographyList.length > 0 ) {
+			var typoKeys = [];
+			typographyList.forEach( function ( item ) {
+				if ( typeof item === 'object' && item !== null ) {
+					Object.keys( item ).forEach( function ( k ) {
+						if ( typoKeys.indexOf( k ) === -1 ) typoKeys.push( k );
+					} );
+				}
+			} );
+			if ( typoKeys.length === 0 ) typoKeys = [ '_id', 'id', 'title' ];
+			html += '<div class="ai-elementor-sync-kit-typography"><h3 class="ai-elementor-sync-result-heading">Typography (' + typographyList.length + ')</h3>';
+			html += '<table class="widefat striped"><thead><tr>';
+			typoKeys.forEach( function ( k ) {
+				html += '<th>' + escapeHtml( k ) + '</th>';
+			} );
+			html += '<th>Edit font</th></tr></thead><tbody>';
+			typographyList.forEach( function ( item ) {
+				var typosId = ( item && ( item._id != null || item.id != null ) ) ? String( item._id != null ? item._id : item.id ) : '';
+				var currentFont = ( item && item.typography_font_family ) ? String( item.typography_font_family ) : '';
+				html += '<tr data-typo-id="' + escapeHtml( typosId ) + '">';
+				if ( typeof item === 'object' && item !== null ) {
+					typoKeys.forEach( function ( k ) {
+						var v = item[ k ];
+						var cell = v === null || v === undefined ? '' : ( typeof v === 'object' ? JSON.stringify( v ) : String( v ) );
+						html += '<td>' + ( k === '_id' || k === 'id' ? '<code>' + escapeHtml( cell ) + '</code>' : escapeHtml( cell ) ) + '</td>';
+					} );
+					var opts = kitFontOptions.map( function ( f ) {
+						var sel = ( f === currentFont || ( currentFont === '' && f === 'Default' ) ) ? ' selected' : '';
+						return '<option value="' + escapeHtml( f === 'Default' ? '' : f ) + '"' + sel + '>' + escapeHtml( f ) + '</option>';
+					} ).join( '' );
+					html += '<td><select class="kit-font-select" data-id="' + escapeHtml( typosId ) + '">' + opts + '</select></td>';
+				} else {
+					html += '<td colspan="' + ( typoKeys.length + 1 ) + '">' + escapeHtml( JSON.stringify( item ) ) + '</td>';
+				}
+				html += '</tr>';
+			} );
+			html += '</tbody></table></div>';
+		}
+		if ( data.raw_settings && typeof data.raw_settings === 'object' ) {
+			html += '<details class="ai-elementor-sync-kit-raw"><summary>Raw settings (JSON)</summary><pre>' + escapeHtml( JSON.stringify( data.raw_settings, null, 2 ) ) + '</pre></details>';
+		}
+		if ( html === '' ) {
+			html = '<p>No colors or typography in kit settings.</p>' + ( data ? renderJson( data ) : '' );
+		}
+		return html;
+	}
+
+	function syncKitColorInputs( colorInput ) {
+		var row = colorInput.closest && colorInput.closest( 'tr' );
+		if ( ! row ) return;
+		var hexInput = row.querySelector && row.querySelector( '.kit-hex-input' );
+		if ( hexInput && colorInput.value ) hexInput.value = colorInput.value;
+	}
+	function syncKitHexInput( hexInput ) {
+		var val = ( hexInput.value || '' ).trim();
+		if ( val.charAt( 0 ) !== '#' ) val = '#' + val;
+		if ( /^#[0-9a-fA-F]{6}$/.test( val ) || /^#[0-9a-fA-F]{3}$/.test( val ) ) {
+			var colorInput = hexInput.closest && hexInput.closest( 'tr' ) && hexInput.closest( 'tr' ).querySelector( '.kit-color-input' );
+			if ( colorInput ) {
+				if ( val.length === 4 ) val = '#' + val.charAt( 1 ) + val.charAt( 1 ) + val.charAt( 2 ) + val.charAt( 2 ) + val.charAt( 3 ) + val.charAt( 3 );
+				colorInput.value = val;
+			}
+		}
+	}
+
+	function saveDirectEdits() {
+		if ( ! lastKitData || ! lastKitData.raw_settings ) {
+			setResult( 'result-kit-settings', '<p class="error">Load kit settings first, then edit colors or fonts and click Save direct edits.</p>', true );
+			return;
+		}
+		var resultEl = document.getElementById( 'result-kit-settings' );
+		if ( ! resultEl ) return;
+		var patch = { colors: [], typography: [] };
+		var systemColorsTable = resultEl.querySelector( '.ai-elementor-sync-kit-colors[data-list="system_colors"] tbody' );
+		if ( systemColorsTable ) {
+			var rows = systemColorsTable.querySelectorAll( 'tr[data-id]' );
+			rows.forEach( function ( tr ) {
+				var id = tr.getAttribute( 'data-id' );
+				var title = tr.getAttribute( 'data-title' ) || '';
+				var hexIn = tr.querySelector( '.kit-hex-input' );
+				var colorIn = tr.querySelector( '.kit-color-input' );
+				var hex = ( hexIn && hexIn.value && hexIn.value.trim() ) ? hexIn.value.trim() : ( colorIn && colorIn.value ? colorIn.value : '' );
+				if ( hex.charAt( 0 ) !== '#' ) hex = '#' + hex;
+				if ( id && hex ) patch.colors.push( { _id: id, title: title, value: hex } );
+			} );
+		}
+		var typoList = lastKitData.raw_settings.system_typography;
+		if ( Array.isArray( typoList ) && typoList.length > 0 ) {
+			var fontSelects = resultEl.querySelectorAll( '.kit-font-select' );
+			var fontById = {};
+			fontSelects.forEach( function ( sel ) {
+				var did = sel.getAttribute( 'data-id' );
+				if ( did !== null && did !== '' ) fontById[ did ] = sel.value !== undefined ? sel.value : '';
+			} );
+			typoList.forEach( function ( item ) {
+				if ( typeof item !== 'object' || ! item ) return;
+				var id = item._id != null ? item._id : ( item.id != null ? item.id : '' );
+				if ( ! id ) return;
+				var fontVal = fontById[ id ] !== undefined ? fontById[ id ] : ( item.typography_font_family || '' );
+				var merged = {};
+				for ( var k in item ) if ( Object.prototype.hasOwnProperty.call( item, k ) ) merged[ k ] = item[ k ];
+				merged.typography_font_family = fontVal;
+				patch.typography.push( merged );
+			} );
+		}
+		if ( patch.colors.length === 0 && patch.typography.length === 0 ) {
+			setResult( 'result-kit-settings', '<p class="error">No editable rows found. Load kit settings first.</p>', true );
+			return;
+		}
+		setLoading( 'result-kit-settings' );
+		fetch( restUrl + '/kit-settings', {
+			method: 'POST',
+			headers: getHeaders( true ),
+			credentials: 'same-origin',
+			body: JSON.stringify( patch ),
+		} )
+			.then( function ( res ) {
+				return responseToJson( res ).then( function ( data ) {
+					return { ok: res.ok, status: res.status, data: data };
+				} );
+			} )
+			.then( function ( result ) {
+				if ( result.ok && result.data ) {
+					lastKitData = result.data;
+					var content = renderKitSettingsResult( result.data, result.status );
+					setResult( 'result-kit-settings', content, false );
+				} else {
+					var errMsg = ( result.data && result.data.message ) ? result.data.message : 'Request failed (status ' + result.status + ').';
+					setResult( 'result-kit-settings', '<p class="error">' + escapeHtml( errMsg ) + '</p>' + ( result.data ? renderJson( result.data ) : '' ), true );
+				}
+			} )
+			.catch( function ( err ) {
+				setResult( 'result-kit-settings', '<p class="error">' + escapeHtml( err.message || String( err ) ) + '</p>', true );
+			} );
+	}
+
+	function initThemeTab() {
+		// Direct click on Load button and delegation (in case button is re-rendered or inside form that intercepts)
+		var loadBtn = document.getElementById( 'btn-load-kit-settings' );
+		if ( loadBtn ) {
+			loadBtn.addEventListener( 'click', function ( e ) {
+				e.preventDefault();
+				e.stopPropagation();
+				loadKitSettings();
+			} );
+		}
+		var saveDirectBtn = document.getElementById( 'btn-save-direct-edits' );
+		if ( saveDirectBtn ) {
+			saveDirectBtn.addEventListener( 'click', function ( e ) {
+				e.preventDefault();
+				saveDirectEdits();
+			} );
+		}
+		document.addEventListener( 'input', function ( e ) {
+			var t = e.target;
+			if ( ! t || ! t.closest || ! t.closest( '#result-kit-settings' ) ) return;
+			if ( t.classList && t.classList.contains( 'kit-color-input' ) ) syncKitColorInputs( t );
+			if ( t.classList && t.classList.contains( 'kit-hex-input' ) ) syncKitHexInput( t );
+		}, true );
+		document.addEventListener( 'click', function ( e ) {
+			var t = e.target;
+			if ( ! t ) return;
+			if ( t.id === 'btn-load-kit-settings' || ( t.tagName === 'BUTTON' && t.closest && t.closest( '#tab-theme' ) && t.textContent && t.textContent.indexOf( 'Load kit' ) !== -1 ) ) {
+				e.preventDefault();
+				e.stopPropagation();
+				loadKitSettings();
+				return;
+			}
+			if ( t.id === 'btn-test-kit-settings' || ( t.getAttribute && t.getAttribute( 'data-test-kit' ) ) ) {
+				e.preventDefault();
+				e.stopPropagation();
+				testKitConnection();
+			}
+		}, true );
+		var testBtn = document.getElementById( 'btn-test-kit-settings' );
+		if ( testBtn ) testBtn.addEventListener( 'click', function ( e ) { e.preventDefault(); e.stopPropagation(); testKitConnection(); } );
+		var form = document.getElementById( 'form-theme' );
+		if ( ! form ) return;
+		form.addEventListener( 'submit', function ( e ) {
+			e.preventDefault();
+			var textarea = document.getElementById( 'theme-patch-json' );
+			var raw = textarea ? ( textarea.value || '' ).trim() : '';
+			if ( ! raw ) {
+				setResult( 'result-kit-settings', '<p class="error">Enter a JSON patch (e.g. {"colors": [...]} or {"typography": [...]}).</p>', true );
+				return;
+			}
+			var patch;
+			try {
+				patch = JSON.parse( raw );
+			} catch ( err ) {
+				setResult( 'result-kit-settings', '<p class="error">Invalid JSON: ' + escapeHtml( err.message || String( err ) ) + '</p>', true );
+				return;
+			}
+			if ( typeof patch !== 'object' || patch === null ) {
+				setResult( 'result-kit-settings', '<p class="error">Patch must be a JSON object.</p>', true );
+				return;
+			}
+			setLoading( 'result-kit-settings' );
+			logToDebug( 'fetch start', { url: restUrl + '/kit-settings', method: 'POST' }, 'C' );
+			fetch( restUrl + '/kit-settings', {
+				method: 'POST',
+				headers: getHeaders( true ),
+				credentials: 'same-origin',
+				body: JSON.stringify( patch ),
+			} )
+				.then( function ( res ) {
+					return responseToJson( res ).then( function ( data ) {
+						return { ok: res.ok, status: res.status, data: data };
+					} );
+				} )
+				.then( function ( result ) {
+					if ( result.ok ) {
+						var content = renderKitSettingsResult( result.data, result.status );
+						setResult( 'result-kit-settings', content, false );
+					} else {
+						var errMsg = ( result.data && result.data.message ) ? result.data.message : 'Request failed (status ' + result.status + ').';
+						setResult( 'result-kit-settings', '<p class="error">' + escapeHtml( errMsg ) + '</p>' + ( result.data ? renderJson( result.data ) : '' ), true );
+					}
+				} )
+				.catch( function ( err ) {
+					setResult( 'result-kit-settings', '<p class="error">' + escapeHtml( err.message || String( err ) ) + '</p>', true );
+				} );
+		} );
 	}
 
 	function initSettings() {
@@ -442,7 +904,7 @@
 		} );
 	}
 
-	// LLM edit: POST JSON { url or template_id, instruction }. If target=auto, detect footer/header from instruction and use first matching template.
+	// LLM edit: POST JSON { url or template_id, instruction }. If target=auto, detect footer/header from instruction. If target=kit, edit global colors/typography.
 	function initLlmEdit() {
 		const form = document.getElementById( 'form-llm-edit' );
 		if ( ! form ) return;
@@ -453,9 +915,14 @@
 				setResult( 'result-llm-edit', '<p class="error">Enter an instruction.</p>', true );
 				return;
 			}
-			var target = ( document.querySelector( 'input[name="llm-target"]:checked' ) || {} ).value;
+			var llmForm = document.getElementById( 'form-llm-edit' );
+			var targetRadio = llmForm ? llmForm.querySelector( 'input[name="llm-target"]:checked' ) : document.querySelector( 'input[name="llm-target"]:checked' );
+			var target = targetRadio && targetRadio.value ? String( targetRadio.value ).trim().toLowerCase() : '';
 			var payloadPromise;
-			if ( target === 'auto' ) {
+			if ( target === 'kit' ) {
+				setLoading( 'result-llm-edit' );
+				payloadPromise = Promise.resolve( { target: 'kit', instruction: instruction } );
+			} else if ( target === 'auto' ) {
 				var docType = detectDocumentTypeFromInstruction( instruction );
 				if ( ! docType ) {
 					setResult( 'result-llm-edit', '<p class="error">Auto target: mention "footer", "header", "single", or "page" in your instruction (e.g. "In the footer, change the copyright to 2025").</p>', true );
@@ -473,23 +940,44 @@
 				payloadPromise = payloadPromise.then( function ( list ) {
 					var first = list.filter( function ( t ) { return ( t.document_type || '' ) === docType; } )[ 0 ];
 					if ( ! first ) return null;
-					return { template_id: first.id };
+					return { template_id: first.id, instruction: instruction };
 				} );
 			} else {
 				var manual = getTargetPayload( 'llm' );
-				if ( ! manual ) {
-					setResult( 'result-llm-edit', '<p class="error">Choose Page (URL) and enter a URL, or choose Template and select a template.</p>', true );
-					return;
+				if ( manual && manual.target === 'kit' ) {
+					target = 'kit';
+					setLoading( 'result-llm-edit' );
+					payloadPromise = Promise.resolve( { target: 'kit', instruction: instruction } );
+				} else if ( ! manual ) {
+					var kitChecked = false;
+					var llmFormEl = document.getElementById( 'form-llm-edit' );
+					if ( llmFormEl ) {
+						var radios = llmFormEl.querySelectorAll( 'input[name="llm-target"]' );
+						for ( var r = 0; r < radios.length; r++ ) {
+							if ( radios[r].checked && String( radios[r].value ).trim().toLowerCase() === 'kit' ) {
+								kitChecked = true;
+								target = 'kit';
+								setLoading( 'result-llm-edit' );
+								payloadPromise = Promise.resolve( { target: 'kit', instruction: instruction } );
+								break;
+							}
+						}
+					}
+					if ( ! kitChecked ) {
+						setResult( 'result-llm-edit', '<p class="error">Choose Page (URL) and enter a URL, or choose Template and select a template.</p>', true );
+						return;
+					}
+				} else {
+					setLoading( 'result-llm-edit' );
+					payloadPromise = Promise.resolve( Object.assign( {}, manual, { instruction: instruction } ) );
 				}
-				setLoading( 'result-llm-edit' );
-				payloadPromise = Promise.resolve( manual );
 			}
 			payloadPromise.then( function ( payload ) {
-				if ( ! payload ) {
+				if ( ! payload && target === 'auto' ) {
 					setResult( 'result-llm-edit', '<p class="error">No template found for that type. Create a ' + docType + ' template in Elementor Theme Builder.</p>', true );
 					return;
 				}
-				var body = Object.assign( {}, payload, { instruction: instruction } );
+				var body = target === 'kit' ? { target: 'kit', instruction: instruction } : ( payload && payload.instruction ? payload : Object.assign( {}, payload, { instruction: instruction } ) );
 				logToDebug( 'fetch start', { url: restUrl + '/llm-edit', target: target }, 'C' );
 				return fetch( restUrl + '/llm-edit', {
 					method: 'POST',
@@ -503,7 +991,7 @@
 						} );
 					} )
 					.then( function ( result ) {
-						var content = renderLlmEditResult( result.data );
+						var content = renderLlmEditResult( result.data, target );
 						setResult( 'result-llm-edit', content, ! result.ok );
 					} )
 					.catch( function ( err ) {
@@ -515,8 +1003,25 @@
 		} );
 	}
 
-	function renderLlmEditResult( data ) {
+	function renderLlmEditResult( data, target ) {
 		if ( ! data ) return renderJson( data );
+		// Kit response: status, applied, kit_id, colors?, typography? or status error, message
+		if ( data.kit_id != null ) {
+			var kitHtml = '';
+			if ( data.status === 'ok' ) {
+				kitHtml += '<p><strong>Kit updated.</strong> Kit ID: ' + escapeHtml( String( data.kit_id ) ) + '</p>';
+				if ( data.applied === false ) {
+					kitHtml += '<p class="description">No changes were applied (AI returned an empty patch).</p>';
+				}
+				if ( ( Array.isArray( data.colors ) && data.colors.length > 0 ) || ( Array.isArray( data.typography ) && data.typography.length > 0 ) ) {
+					kitHtml += '<details><summary>Updated colors / typography</summary><pre>' + escapeHtml( JSON.stringify( { colors: data.colors || [], typography: data.typography || [] }, null, 2 ) ) + '</pre></details>';
+				}
+			} else {
+				kitHtml += '<p class="error"><strong>Error:</strong> ' + escapeHtml( data.message || 'Unknown error' ) + '</p>';
+			}
+			kitHtml += '<div class="ai-elementor-sync-llm-full"><h3 class="ai-elementor-sync-result-heading">Full response</h3>' + renderJson( data ) + '</div>';
+			return kitHtml;
+		}
 		const received = data.received_from_llm;
 		let html = '';
 		if ( received && typeof received === 'object' ) {
@@ -727,6 +1232,10 @@
 		initTabs( function ( tabName ) {
 			if ( tabName === 'settings' ) loadSettings();
 			if ( tabName === 'log' ) loadLog();
+			if ( tabName === 'theme' ) {
+				testKitConnection();
+				loadKitSettings();
+			}
 		} );
 		loadTemplates();
 		initTargetToggles();
@@ -737,6 +1246,7 @@
 		initReplaceText();
 		initLlmEdit();
 		initApplyEdits();
+		initThemeTab();
 		initAppPassword();
 		initRegisterLlm();
 		initSettings();

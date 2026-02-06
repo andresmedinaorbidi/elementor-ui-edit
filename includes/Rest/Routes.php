@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace AiElementorSync\Rest;
 
 use AiElementorSync\Rest\Controllers\ApplicationPasswordController;
+use AiElementorSync\Rest\Controllers\KitSettingsController;
 use AiElementorSync\Rest\Controllers\LlmEditController;
 use AiElementorSync\Rest\Controllers\ReplaceTextController;
 use AiElementorSync\Rest\Controllers\SettingsController;
@@ -139,6 +140,11 @@ final class Routes {
 					'required' => true,
 					'type'     => 'string',
 				],
+				'target'        => [
+					'required' => false,
+					'type'     => 'string',
+					'description' => 'Set to "kit" to edit global colors/typography (no url/template_id).',
+				],
 				'widget_types'  => [
 					'required' => false,
 					'type'     => 'array',
@@ -190,6 +196,23 @@ final class Routes {
 			'callback'            => [ ApplicationPasswordController::class, 'create_application_password' ],
 			'permission_callback' => [ self::class, 'permission_create_application_password' ],
 			'args'                => [],
+		] );
+
+		register_rest_route( self::NAMESPACE, 'kit-settings', [
+			'methods'             => WP_REST_Server::READABLE,
+			'callback'            => [ KitSettingsController::class, 'get_settings' ],
+			'permission_callback' => [ self::class, 'permission_kit_settings' ],
+			'args'                => [],
+		] );
+		register_rest_route( self::NAMESPACE, 'kit-settings', [
+			'methods'             => WP_REST_Server::CREATABLE,
+			'callback'            => [ KitSettingsController::class, 'update_settings' ],
+			'permission_callback' => [ self::class, 'permission_kit_settings' ],
+			'args'                => [
+				'colors'     => [ 'required' => false, 'type' => 'array', 'description' => 'Global colors (merged into system_colors).' ],
+				'typography' => [ 'required' => false, 'type' => 'array', 'description' => 'Global typography (merged into system_typography).' ],
+				'settings'   => [ 'required' => false, 'type' => 'object', 'description' => 'Arbitrary page_settings keys to merge.' ],
+			],
 		] );
 
 		register_rest_route( self::NAMESPACE, 'settings', [
@@ -291,7 +314,7 @@ final class Routes {
 	}
 
 	/**
-	 * Permission callback for llm-edit: require auth and edit_post on resolved post (page or template).
+	 * Permission callback for llm-edit: require auth; when target=kit require manage_options, else edit_post on resolved post (page or template).
 	 *
 	 * @param WP_REST_Request $request Request.
 	 * @return true|WP_Error
@@ -299,6 +322,17 @@ final class Routes {
 	public static function permission_llm_edit( WP_REST_Request $request ) {
 		if ( ! is_user_logged_in() ) {
 			return new \WP_Error( 'rest_not_logged_in', __( 'Authentication required.', 'ai-elementor-sync' ), [ 'status' => 401 ] );
+		}
+		$params = $request->get_json_params();
+		if ( empty( $params ) ) {
+			$params = $request->get_body_params();
+		}
+		$target = isset( $params['target'] ) && is_string( $params['target'] ) ? trim( $params['target'] ) : '';
+		if ( $target === 'kit' ) {
+			if ( ! current_user_can( 'manage_options' ) ) {
+				return new \WP_Error( 'rest_forbidden', __( 'You do not have permission to edit kit settings.', 'ai-elementor-sync' ), [ 'status' => 403 ] );
+			}
+			return true;
 		}
 		$params = EditTargetResolver::getTargetParamsFromRequest( $request );
 		$resolved = EditTargetResolver::fromRequest( $params );
@@ -370,6 +404,22 @@ final class Routes {
 		}
 		if ( ! current_user_can( 'manage_options' ) ) {
 			return new \WP_Error( 'rest_forbidden', __( 'You do not have permission to manage settings.', 'ai-elementor-sync' ), [ 'status' => 403 ] );
+		}
+		return true;
+	}
+
+	/**
+	 * Permission callback for kit-settings: require manage_options.
+	 *
+	 * @param WP_REST_Request $request Request.
+	 * @return true|\WP_Error
+	 */
+	public static function permission_kit_settings( WP_REST_Request $request ) {
+		if ( ! is_user_logged_in() ) {
+			return new \WP_Error( 'rest_not_logged_in', __( 'Authentication required.', 'ai-elementor-sync' ), [ 'status' => 401 ] );
+		}
+		if ( ! current_user_can( 'manage_options' ) ) {
+			return new \WP_Error( 'rest_forbidden', __( 'You do not have permission to manage kit settings.', 'ai-elementor-sync' ), [ 'status' => 403 ] );
 		}
 		return true;
 	}
